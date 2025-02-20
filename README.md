@@ -3,8 +3,7 @@
 A Blender addon that simplifies the creation of DayZ mod geometries and memory points. This tool allows modders to set up their model's collision boxes, view geometries, and memory points directly in Blender instead of using DayZ's Object Builder.
 
 ## Using The Tool
-[![DayZ Geometry Maker Usage](https://img.youtube.com/vi/mwhIp50wccA/0.jpg)](https://youtu.be/mwhIp50wccA)
-
+[![DayZ Geometry Maker Usage](https://img.youtube.com/vi/k2En_IpPORc/0.jpg)](https://youtu.be/k2En_IpPORc)
 ## Features
 
 - Create all required geometry types:
