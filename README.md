@@ -10,7 +10,7 @@ A Blender addon that simplifies the creation of DayZ mod geometries and memory p
 - Create all required geometry types:
   - Basic Geometry (collision with autocenter)
   - View Geometry (object visibility)
-  - View Pilot (exact copy of original model with LOD value 1.100e+3)
+  - View Pilot (exact copy of original model with LOD value for View Pilot)
   - Fire Geometry (bullet collision)
 - Set up Memory Points:
   - Bounding Box Points (min/max)
