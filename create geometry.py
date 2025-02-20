@@ -18,6 +18,7 @@ collections_data = {
     "View Geometry": "6.000e+15",
     "Fire Geometry": "7.000e+15",
     "Memory": "1.000e+15",
+    "View Pilot": "1.100e+3",
     "1": "-1.0",
     "2": "-1.0",
     "3": "-1.0",
@@ -106,6 +107,7 @@ class OBJECT_PT_create_dayz_geometry(bpy.types.Panel):
         layout.prop(context.scene, "selected_object", text="Select Object")
         layout.operator("object.create_geometry", text="Create Geometry")
         layout.operator("object.create_view_geometry", text="Create View Geometry")
+        layout.operator("object.create_view_pilot", text="Create View Pilot")
         layout.operator("object.create_fire_geometry", text="Create Fire Geometry")
         
         # Memory section with collapsible options
@@ -166,9 +168,9 @@ class OBJECT_OT_create_selected_lods(bpy.types.Operator):
 def create_lod_meshes():
     """
     Creates LOD versions of the selected object
-    LOD1: Original mesh (high detail)
-    LOD2: Optimized mesh with merged vertices
-    LOD3: Further optimized for far distance
+    LOD1: Original high-poly model
+    LOD2: Optimized with merged vertices
+    LOD3: Further optimized for distance
     LOD4: Highly optimized for very far distance
     """
     original_obj = bpy.context.scene.selected_object
@@ -176,7 +178,36 @@ def create_lod_meshes():
         print("No object selected")
         return
 
-    # Updated LOD settings with simpler names
+    # Set original object as active
+    set_active_object(original_obj)
+
+    # First, ensure original object has proper materials and weights
+    if hasattr(original_obj, "armaObjProps"):
+        original_obj.armaObjProps.isArmaObject = True
+        original_obj.armaObjProps.mass = 1.0  # Default mass
+        original_obj.armaObjProps.weight = 1.0  # Default weight
+
+        # Apply materials to original object
+        if original_obj.vertex_groups:
+            # Create materials for each vertex group
+            assign_materials_to_groups(original_obj)
+        else:
+            # Just one default material
+            mat = create_default_material()
+            if mat.name not in original_obj.data.materials:
+                original_obj.data.materials.append(mat)
+
+    # Create FHQWeights layer on original object
+    bm = bmesh.new()
+    bm.from_mesh(original_obj.data)
+    if 'FHQWeights' not in bm.verts.layers.float:
+        weight_layer = bm.verts.layers.float.new('FHQWeights')
+        for vert in bm.verts:
+            vert[weight_layer] = 1.0
+    bm.to_mesh(original_obj.data)
+    bm.free()
+
+    # Now create LODs
     lod_settings = [
         (bpy.context.scene.create_lod1, "1", 1, None),
         (bpy.context.scene.create_lod2, "2", 2, 0.00212),
@@ -205,6 +236,20 @@ def create_lod_meshes():
             lod_obj.armaObjProps.isArmaObject = True
             lod_obj.armaObjProps.lod = collections_data[name]
             lod_obj.armaObjProps.lodDistance = distance
+            lod_obj.armaObjProps.mass = original_obj.armaObjProps.mass
+            lod_obj.armaObjProps.weight = 1.0
+
+            # Copy materials from original object
+            if original_obj.vertex_groups:
+                # Copy vertex groups and materials
+                for vgroup in original_obj.vertex_groups:
+                    if vgroup.name not in lod_obj.vertex_groups:
+                        lod_obj.vertex_groups.new(name=vgroup.name)
+                assign_materials_to_groups(lod_obj)
+            else:
+                # Just one default material
+                mat = create_default_material()
+                lod_obj.data.materials.append(mat)
 
         # Link to collection
         collection.objects.link(lod_obj)
@@ -224,20 +269,48 @@ def create_lod_meshes():
 
         print(f"Created {name} with optimization threshold: {threshold}")
 
+def create_default_material(name="default"):
+    """Creates a default white material with DayZ rvmat"""
+    if name in bpy.data.materials:
+        return bpy.data.materials[name]
+        
+    mat = bpy.data.materials.new(name=name)
+    
+    # Set up Arma material properties
+    if hasattr(mat, "armaMatProps"):
+        mat.armaMatProps.isArmaObject = True
+        mat.armaMatProps.texture = "DZ\\data\\data\\white.paa"  # Default white texture
+        mat.armaMatProps.rvMat = "DZ\\data\\data\\default.rvmat"  # Default DayZ rvmat
+        mat.armaMatProps.colorString = ""
+    
+    return mat
+
+def assign_materials_to_groups(obj):
+    """Assigns default materials to each vertex group"""
+    # Create materials for each vertex group
+    for vgroup in obj.vertex_groups:
+        mat_name = f"default_{vgroup.name}"
+        mat = create_default_material(mat_name)
+        
+        # Assign material to object if not already assigned
+        if mat.name not in obj.data.materials:
+            obj.data.materials.append(mat)
+
 def create_arma_bounding_boxes(collection_name):
-    """
-    Creates bounding box geometry for DayZ objects
-    Geometry types:
-    - Basic Geometry: Simple collision with autocenter
-    - View Geometry: Used for object visibility
-    - Fire Geometry: Subdivided mesh for bullet collision
-    """
+    """Creates bounding box geometry for DayZ objects"""
+    # Skip if this is View Pilot - it's handled separately
+    if collection_name == "View Pilot":
+        return create_view_pilot(collection_name)
+
     # Get the object selected in the UI panel
     original_obj = bpy.context.scene.selected_object
 
     if original_obj is None or original_obj.type != 'MESH':
         print("Please select a mesh object in the panel.")
         return
+
+    # Set original object as active
+    set_active_object(original_obj)
 
     print(f"Original object selected from UI: {original_obj.name}")  # Debug log
 
@@ -278,10 +351,49 @@ def create_arma_bounding_boxes(collection_name):
     # Set dimensions
     bbox_obj.scale = (width / 1, depth / 1, height / 1)
 
-    # Create vertex group and assign all vertices
+    # Clear any existing vertex groups
+    for vg in bbox_obj.vertex_groups:
+        bbox_obj.vertex_groups.remove(vg)
+
+    # Create single Component01 vertex group and assign all vertices
     vertex_group = bbox_obj.vertex_groups.new(name="Component01")
     vertices = [v.index for v in bbox_obj.data.vertices]
     vertex_group.add(vertices, 1.0, 'REPLACE')
+
+    # Create FHQWeights layer
+    bm = bmesh.new()
+    bm.from_mesh(bbox_obj.data)
+    weight_layer = bm.verts.layers.float.new('FHQWeights')
+    for vert in bm.verts:
+        vert[weight_layer] = 1.0
+    bm.to_mesh(bbox_obj.data)
+    bm.free()
+
+    # Set Arma properties including mass/weight
+    if hasattr(bbox_obj, "armaObjProps"):
+        bbox_obj.armaObjProps.isArmaObject = True
+        bbox_obj.armaObjProps.lod = collections_data[collection_name]
+        
+        # Calculate mass based on volume
+        volume = width * depth * height
+        bbox_obj.armaObjProps.mass = volume * 0.5
+        bbox_obj.armaObjProps.weight = 1.0
+
+        # Create and assign default material
+        if collection_name == "Geometry" or collection_name == "View Geometry":
+            # Just create one default material
+            mat = create_default_material(collection_name)
+            if mat.name not in bbox_obj.data.materials:
+                bbox_obj.data.materials.append(mat)
+
+        # Add special properties for basic Geometry
+        if collection_name == "Geometry":
+            bbox_obj.armaObjProps.namedPropIndex = 0
+            # Create new named property if it doesn't exist
+            if len(bbox_obj.armaObjProps.namedProps) == 0:
+                bbox_obj.armaObjProps.namedProps.add()
+            bbox_obj.armaObjProps.namedProps[0].name = "autocenter"
+            bbox_obj.armaObjProps.namedProps[0].value = "0"
 
     # Move object to the correct collection
     bpy.ops.object.select_all(action='DESELECT')
@@ -293,20 +405,6 @@ def create_arma_bounding_boxes(collection_name):
             col.objects.unlink(bbox_obj)
 
     collection.objects.link(bbox_obj)
-
-    # Apply Arma Object Properties
-    if hasattr(bbox_obj, "armaObjProps"):
-        bbox_obj.armaObjProps.isArmaObject = True
-        bbox_obj.armaObjProps.lod = collections_data[collection_name]
-        
-        # Add special properties for Geometry type
-        if collection_name == "Geometry":
-            bbox_obj.armaObjProps.namedPropIndex = 0
-            # Create new named property if it doesn't exist
-            if len(bbox_obj.armaObjProps.namedProps) == 0:
-                bbox_obj.armaObjProps.namedProps.add()
-            bbox_obj.armaObjProps.namedProps[0].name = "autocenter"
-            bbox_obj.armaObjProps.namedProps[0].value = "0"
 
     # Special handling for Fire Geometry
     if collection_name == "Fire Geometry":
@@ -325,7 +423,7 @@ def create_arma_bounding_boxes(collection_name):
         # Step 1: Subdivide the box using fixed subdivisions
         print("Starting subdivision process...")
         bpy.ops.object.mode_set(mode='EDIT')
-        
+
         # Apply subdivisions to match manual process
         print("Applying subdivisions...")
         bpy.ops.mesh.subdivide(number_cuts=4)  # Fourth with 4 cuts
@@ -358,7 +456,7 @@ def create_arma_bounding_boxes(collection_name):
             # Set the target to the ORIGINAL mesh object
             print(f"Setting target to original object: {original_obj.name}")
             shrinkwrap_modifier.target = original_obj
-            shrinkwrap_modifier.offset = 0.01
+            shrinkwrap_modifier.offset = 0.02
             print("Modifier settings configured")
 
             # Apply the Shrinkwrap modifier
@@ -370,6 +468,20 @@ def create_arma_bounding_boxes(collection_name):
             print(f"Error during modifier operations: {str(e)}")
             
         print("Fire Geometry processing completed")
+
+def set_active_object(obj):
+    """Sets the given object as active and selected"""
+    if obj is None:
+        return False
+        
+    # Deselect all objects
+    bpy.ops.object.select_all(action='DESELECT')
+    
+    # Make our object active and selected
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+    
+    return True
 
 def create_memory_point():
     """
@@ -390,6 +502,9 @@ def create_memory_point():
     if not original_obj:
         print("No object selected in panel")
         return
+
+    # Set original object as active before any operations
+    set_active_object(original_obj)
 
     # Check for existing Memory object
     existing_memory = None
@@ -582,11 +697,64 @@ def create_memory_point():
                 col.objects.unlink(memory_obj)
         collection.objects.link(memory_obj)
 
+def create_view_pilot(collection_name):
+    """Creates View Pilot geometry by copying the original model"""
+    # Get the selected object from the panel UI
+    original_obj = bpy.context.scene.selected_object
+    if not original_obj:
+        print("No object selected in panel")
+        return
+
+    # Set original object as active
+    set_active_object(original_obj)
+
+    # Create a copy of the original mesh
+    pilot_obj = original_obj.copy()
+    pilot_obj.data = original_obj.data.copy()
+    pilot_obj.name = collection_name
+
+    # Set Arma properties
+    if hasattr(pilot_obj, "armaObjProps"):
+        pilot_obj.armaObjProps.isArmaObject = True
+        pilot_obj.armaObjProps.lod = collections_data[collection_name]
+        pilot_obj.armaObjProps.mass = original_obj.armaObjProps.mass
+        pilot_obj.armaObjProps.weight = 1.0
+
+    # Create or get collection
+    if collection_name not in bpy.data.collections:
+        collection = bpy.data.collections.new(collection_name)
+        bpy.context.scene.collection.children.link(collection)
+    else:
+        collection = bpy.data.collections[collection_name]
+
+    # Move object to the correct collection
+    if pilot_obj.users_collection:
+        for col in pilot_obj.users_collection:
+            col.objects.unlink(pilot_obj)
+    collection.objects.link(pilot_obj)
+
+    return pilot_obj
+
+# Modify the View Pilot operator to use the new function
+class OBJECT_OT_create_view_pilot(bpy.types.Operator):
+    """Creates view pilot geometry"""
+    bl_idname = "object.create_view_pilot"
+    bl_label = "Create View Pilot"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        if not context.scene.selected_object:
+            self.report({'ERROR'}, "Please select an object in the panel first")
+            return {'CANCELLED'}
+        create_view_pilot("View Pilot")
+        return {'FINISHED'}
+
 # Registration code
 classes = (
     OBJECT_OT_create_geometry,
     OBJECT_OT_create_view_geometry,
     OBJECT_OT_create_fire_geometry,
+    OBJECT_OT_create_view_pilot,
     OBJECT_OT_create_memory,
     OBJECT_OT_create_selected_memory,
     OBJECT_OT_create_lods,
