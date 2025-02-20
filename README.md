@@ -2,6 +2,9 @@
 
 A Blender addon that simplifies the creation of DayZ mod geometries and memory points. This tool allows modders to set up their model's collision boxes, view geometries, and memory points directly in Blender instead of using DayZ's Object Builder.
 
+## Quick Start Video Tutorial
+[![DayZ Geometry Maker Tutorial](https://img.youtube.com/vi/mwhIp50wccA/0.jpg)](https://youtu.be/mwhIp50wccA)
+
 ## Features
 
 - Create all required geometry types:
@@ -16,6 +19,11 @@ A Blender addon that simplifies the creation of DayZ mod geometries and memory p
   - Bullet Ejection Points
   - Eye ADS Point
   - Custom Invview Point
+- Create LOD Levels:
+  - LOD 1 (Original high-poly model)
+  - LOD 2 (Optimized with merged vertices)
+  - LOD 3 (Further optimized for distance)
+  - LOD 4 (Highly optimized for far distance)
 
 ## Installation
 
@@ -39,6 +47,10 @@ A Blender addon that simplifies the creation of DayZ mod geometries and memory p
    - Click "Create Memory" to show options
    - Select which points you want to create
    - Click "Create Selected Memory Points"
+7. Create LOD levels:
+   - Click "Levels of Detail" to show options
+   - Select which LOD levels you want
+   - Click "Create Selected LODs"
 
 ## Memory Points Explained
 
@@ -52,6 +64,14 @@ A Blender addon that simplifies the creation of DayZ mod geometries and memory p
 - **Bullet Eject Points**: Define casing ejection path
 - **Eye ADS Point**: Defines aiming position
 
+## LOD System
+
+The addon creates optimized versions of your model for different view distances:
+- **1**: Original high-quality mesh
+- **2**: Slightly optimized (merged vertices at 0.00212 distance)
+- **3**: Medium optimization (merged vertices at 0.00424 distance)
+- **4**: High optimization (merged vertices at 0.00848 distance)
+
 ## Benefits Over Object Builder
 
 - Direct visualization in Blender
@@ -59,6 +79,7 @@ A Blender addon that simplifies the creation of DayZ mod geometries and memory p
 - More precise point placement
 - Better integration with modeling process
 - Automatic calculations for geometry sizes
+- One-click LOD creation
 
 ## Requirements
 
@@ -75,6 +96,10 @@ Feel free to contribute to this project by:
 ## Credits
 
 Created by [Phlanka.com](https://phlanka.com)
+
+## Support
+
+Join our Discord community: [http://discord.phlanka.com](http://discord.phlanka.com)
 
 ## License
 

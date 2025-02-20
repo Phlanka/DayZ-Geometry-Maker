@@ -4,7 +4,7 @@ bl_info = {
     "category": "Object",
     "description": "Addon for creating geometry for DayZ Mod",
     "author": "Phlanka.com",
-    "version": (1, 0, 0),
+    "version": (1, 0, 1),
 }
 
 import bpy
@@ -17,7 +17,11 @@ collections_data = {
     "Geometry": "1.000e+13",
     "View Geometry": "6.000e+15",
     "Fire Geometry": "7.000e+15",
-    "Memory": "1.000e+15" 
+    "Memory": "1.000e+15",
+    "1": "-1.0",
+    "2": "-1.0",
+    "3": "-1.0",
+    "4": "-1.0"
 }
 
 def calculate_faces_after_subdivision(subdivisions):
@@ -120,6 +124,105 @@ class OBJECT_PT_create_dayz_geometry(bpy.types.Panel):
             box.prop(context.scene, "memory_bullet_eject")
             box.prop(context.scene, "memory_eye_ads")
             box.operator("object.create_selected_memory", text="Create Selected Memory Points")
+
+        # LOD section with collapsible options
+        row = layout.row()
+        row.operator("object.create_lods", text="Levels Of Detail", 
+                    icon='TRIA_RIGHT' if not context.scene.show_lod_options else 'TRIA_DOWN')
+        
+        if context.scene.show_lod_options:
+            box = layout.box()
+            box.prop(context.scene, "create_lod1", text="1")
+            box.prop(context.scene, "create_lod2", text="2")
+            box.prop(context.scene, "create_lod3", text="3")
+            box.prop(context.scene, "create_lod4", text="4")
+            box.operator("object.create_selected_lods", text="Create Selected LODs")
+
+# Add new operator for LOD creation
+class OBJECT_OT_create_lods(bpy.types.Operator):
+    """Show/Hide LOD options"""
+    bl_idname = "object.create_lods"
+    bl_label = "Levels Of Detail"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        context.scene.show_lod_options = not context.scene.show_lod_options
+        return {'FINISHED'}
+
+# Add new operator for actual LOD creation
+class OBJECT_OT_create_selected_lods(bpy.types.Operator):
+    """Creates selected LOD versions of the object"""
+    bl_idname = "object.create_selected_lods"
+    bl_label = "Create Selected LODs"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        if not context.scene.selected_object:
+            self.report({'ERROR'}, "Please select an object in the panel first")
+            return {'CANCELLED'}
+        create_lod_meshes()
+        return {'FINISHED'}
+
+def create_lod_meshes():
+    """
+    Creates LOD versions of the selected object
+    LOD1: Original mesh (high detail)
+    LOD2: Optimized mesh with merged vertices
+    LOD3: Further optimized for far distance
+    LOD4: Highly optimized for very far distance
+    """
+    original_obj = bpy.context.scene.selected_object
+    if not original_obj:
+        print("No object selected")
+        return
+
+    # Updated LOD settings with simpler names
+    lod_settings = [
+        (bpy.context.scene.create_lod1, "1", 1, None),
+        (bpy.context.scene.create_lod2, "2", 2, 0.00212),
+        (bpy.context.scene.create_lod3, "3", 5, 0.00424),
+        (bpy.context.scene.create_lod4, "4", 10, 0.00848)
+    ]
+
+    for create_lod, name, distance, threshold in lod_settings:
+        if not create_lod:
+            continue
+
+        # Create collection if it doesn't exist
+        if name not in bpy.data.collections:
+            collection = bpy.data.collections.new(name)
+            bpy.context.scene.collection.children.link(collection)
+        else:
+            collection = bpy.data.collections[name]
+
+        # Create copy of original mesh
+        lod_obj = original_obj.copy()
+        lod_obj.data = original_obj.data.copy()
+        lod_obj.name = name
+
+        # Set Arma properties
+        if hasattr(lod_obj, "armaObjProps"):
+            lod_obj.armaObjProps.isArmaObject = True
+            lod_obj.armaObjProps.lod = collections_data[name]
+            lod_obj.armaObjProps.lodDistance = distance
+
+        # Link to collection
+        collection.objects.link(lod_obj)
+
+        # Apply optimization for LOD2-4
+        if threshold:
+            # Select and make active
+            bpy.ops.object.select_all(action='DESELECT')
+            lod_obj.select_set(True)
+            bpy.context.view_layer.objects.active = lod_obj
+            
+            # Enter edit mode and merge vertices
+            bpy.ops.object.mode_set(mode='EDIT')
+            bpy.ops.mesh.select_all(action='SELECT')
+            bpy.ops.mesh.remove_doubles(threshold=threshold)
+            bpy.ops.object.mode_set(mode='OBJECT')
+
+        print(f"Created {name} with optimization threshold: {threshold}")
 
 def create_arma_bounding_boxes(collection_name):
     """
@@ -405,6 +508,9 @@ def create_memory_point():
         return
 
     if existing_memory:
+        # Ensure we're in object mode
+        bpy.ops.object.mode_set(mode='OBJECT')
+        
         # Add new vertices to existing mesh
         original_vert_count = len(existing_memory.data.vertices)
         
@@ -419,9 +525,15 @@ def create_memory_point():
             existing_memory.data.vertices[original_vert_count + i].co = v.co
         
         # Create new vertex groups
-        for name, index in vgroups:
+        for name, index_data in vgroups:
             vg = existing_memory.vertex_groups.new(name=name)
-            vg.add([original_vert_count + index], 1.0, 'REPLACE')
+            if isinstance(index_data, list):
+                # Multiple vertices for this group (bolt_axis)
+                for idx in index_data:
+                    vg.add([original_vert_count + idx], 1.0, 'REPLACE')
+            else:
+                # Single vertex for this group
+                vg.add([original_vert_count + index_data], 1.0, 'REPLACE')
         
         # Cleanup
         bpy.data.meshes.remove(temp_mesh)
@@ -477,6 +589,8 @@ classes = (
     OBJECT_OT_create_fire_geometry,
     OBJECT_OT_create_memory,
     OBJECT_OT_create_selected_memory,
+    OBJECT_OT_create_lods,
+    OBJECT_OT_create_selected_lods,
     OBJECT_PT_create_dayz_geometry
 )
 
@@ -534,6 +648,33 @@ def register():
         default=False
     )
 
+    # Add property to track LOD section expansion
+    bpy.types.Scene.show_lod_options = bpy.props.BoolProperty(
+        default=False
+    )
+
+    # Add LOD properties
+    bpy.types.Scene.create_lod1 = bpy.props.BoolProperty(
+        name="LOD 1",
+        description="Create LOD1 (High detail, 1m view distance)",
+        default=False
+    )
+    bpy.types.Scene.create_lod2 = bpy.props.BoolProperty(
+        name="LOD 2",
+        description="Create LOD2 (Medium detail, 2m view distance)",
+        default=False
+    )
+    bpy.types.Scene.create_lod3 = bpy.props.BoolProperty(
+        name="LOD 3",
+        description="Create LOD3 (Low detail, 5m view distance)",
+        default=False
+    )
+    bpy.types.Scene.create_lod4 = bpy.props.BoolProperty(
+        name="LOD 4",
+        description="Create LOD4 (Lowest detail, 10m view distance)",
+        default=False
+    )
+
 def unregister():
     """Unregisters all classes and properties for the addon"""
     for cls in reversed(classes):
@@ -549,6 +690,11 @@ def unregister():
     del bpy.types.Scene.memory_bullet_eject
     del bpy.types.Scene.memory_eye_ads
     del bpy.types.Scene.show_memory_options
+    del bpy.types.Scene.show_lod_options
+    del bpy.types.Scene.create_lod1
+    del bpy.types.Scene.create_lod2
+    del bpy.types.Scene.create_lod3
+    del bpy.types.Scene.create_lod4
 
 if __name__ == "__main__":
     register()
