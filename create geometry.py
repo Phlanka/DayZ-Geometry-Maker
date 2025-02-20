@@ -180,8 +180,8 @@ def create_lod_meshes():
     lod_settings = [
         (bpy.context.scene.create_lod1, "1", 1, None),
         (bpy.context.scene.create_lod2, "2", 2, 0.00212),
-        (bpy.context.scene.create_lod3, "3", 5, 0.00424),
-        (bpy.context.scene.create_lod4, "4", 10, 0.00848)
+        (bpy.context.scene.create_lod3, "3", 3, 0.00424),
+        (bpy.context.scene.create_lod4, "4", 4, 0.00848)
     ]
 
     for create_lod, name, distance, threshold in lod_settings:
