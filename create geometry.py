@@ -4,7 +4,7 @@ bl_info = {
     "category": "Object",
     "description": "Addon for creating geometry for DayZ Mod",
     "author": "Phlanka.com",
-    "version": (1, 0, 1),
+    "version": (1, 0, 2),
 }
 
 import bpy
@@ -68,7 +68,9 @@ class OBJECT_OT_create_fire_geometry(bpy.types.Operator):
         if not context.scene.selected_object:
             self.report({'ERROR'}, "Please select an object in the panel first")
             return {'CANCELLED'}
-        create_arma_bounding_boxes("Fire Geometry")
+        
+        # Toggle options panel
+        context.scene.show_fire_geometry_options = not context.scene.show_fire_geometry_options
         return {'FINISHED'}
 
 class OBJECT_OT_create_memory(bpy.types.Operator):
@@ -108,7 +110,17 @@ class OBJECT_PT_create_dayz_geometry(bpy.types.Panel):
         layout.operator("object.create_geometry", text="Create Geometry")
         layout.operator("object.create_view_geometry", text="Create View Geometry")
         layout.operator("object.create_view_pilot", text="Create View Pilot")
-        layout.operator("object.create_fire_geometry", text="Create Fire Geometry")
+        
+        # Fire Geometry section with collapsible options
+        row = layout.row()
+        row.operator("object.create_fire_geometry", text="Create Fire Geometry",
+                    icon='TRIA_RIGHT' if not context.scene.show_fire_geometry_options else 'TRIA_DOWN')
+        
+        if context.scene.show_fire_geometry_options:
+            box = layout.box()
+            box.label(text="Fire Geometry Options")
+            box.prop(context.scene, "fire_geometry_quality", text="Quality")
+            box.operator("object.create_selected_fire_geometry", text="Create Fire Geometry")
         
         # Memory section with collapsible options
         row = layout.row()
@@ -138,7 +150,18 @@ class OBJECT_PT_create_dayz_geometry(bpy.types.Panel):
             box.prop(context.scene, "create_lod2", text="2")
             box.prop(context.scene, "create_lod3", text="3")
             box.prop(context.scene, "create_lod4", text="4")
+            box.prop(context.scene, "create_lod5", text="5")
+            box.prop(context.scene, "create_lod6", text="6")
             box.operator("object.create_selected_lods", text="Create Selected LODs")
+
+        # Add Export P3D button that checks for ArmaToolbox
+        try:
+            import ArmaToolbox
+            layout.operator("armatoolbox.export_p3d", text="Export P3D")
+        except ImportError:
+            row = layout.row()
+            row.label(text="ArmaToolbox not installed")
+            row.operator("wm.url_open", text="Get ArmaToolbox").url = "https://github.com/AlwarrenSidh/ArmAToolbox"
 
 # Add new operator for LOD creation
 class OBJECT_OT_create_lods(bpy.types.Operator):
@@ -165,61 +188,108 @@ class OBJECT_OT_create_selected_lods(bpy.types.Operator):
         create_lod_meshes()
         return {'FINISHED'}
 
+# Add new operator for actual fire geometry creation
+class OBJECT_OT_create_selected_fire_geometry(bpy.types.Operator):
+    """Creates fire geometry with current quality settings"""
+    bl_idname = "object.create_selected_fire_geometry"
+    bl_label = "Create Fire Geometry"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        if not context.scene.selected_object:
+            self.report({'ERROR'}, "Please select an object in the panel first")
+            return {'CANCELLED'}
+            
+        # Check if we're in edit mode
+        if context.active_object and context.active_object.mode == 'EDIT':
+            self.report({'WARNING'}, "Please exit Edit mode before creating fire geometry")
+            return {'CANCELLED'}
+            
+        create_fire_geometry("Fire Geometry", context.scene.selected_object, context.scene.fire_geometry_quality)
+        return {'FINISHED'}
+
+def create_materials_for_selections(obj, is_low_lod=False):
+    """Creates and assigns materials based on vertex groups"""
+    # Make sure we're in object mode first
+    bpy.ops.object.mode_set(mode='OBJECT')
+    
+    # Clear any existing materials
+    obj.data.materials.clear()
+    
+    # For each vertex group
+    for vgroup in obj.vertex_groups:
+        # Create new material
+        mat_name = f"default_{vgroup.name}"
+        mat = bpy.data.materials.new(name=mat_name)
+        
+        # Set up Arma material properties
+        if hasattr(mat, "armaMatProps"):
+            mat.armaMatProps.isArmaObject = True
+            mat.armaMatProps.texture = "dz\\data\\data\\duha.paa"
+            mat.armaMatProps.rvMat = "dz\\data\\data\\default.rvmat"
+            mat.armaMatProps.colorString = ""
+        
+        # Add material to object
+        obj.data.materials.append(mat)
+        
+        # Enter edit mode
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_all(action='DESELECT')
+        
+        # Select vertices in this vertex group
+        bpy.ops.object.vertex_group_set_active(group=vgroup.name)
+        bpy.ops.object.vertex_group_select()
+        
+        # Select faces that use these vertices
+        bpy.ops.mesh.select_face_by_sides()
+        
+        # Assign material to selected faces
+        obj.active_material_index = len(obj.data.materials) - 1
+        bpy.ops.object.material_slot_assign()
+        
+        # Exit edit mode
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+    if is_low_lod:
+        # For LOD3 and LOD4, combine materials to reduce sections
+        combined_material = bpy.data.materials.new(name=f"combined_{obj.name}")
+        if hasattr(combined_material, "armaMatProps"):
+            combined_material.armaMatProps.isArmaObject = True
+            combined_material.armaMatProps.texture = "dz\\data\\data\\duha.paa"
+            combined_material.armaMatProps.rvMat = "dz\\data\\data\\default.rvmat"
+        obj.data.materials.clear()
+        obj.data.materials.append(combined_material)
+
+
 def create_lod_meshes():
-    """
-    Creates LOD versions of the selected object
-    LOD1: Original high-poly model
-    LOD2: Optimized with merged vertices
-    LOD3: Further optimized for distance
-    LOD4: Highly optimized for very far distance
-    """
+    """Creates LOD versions of the selected object"""
     original_obj = bpy.context.scene.selected_object
     if not original_obj:
         print("No object selected")
         return
 
-    # Set original object as active
+    # Set original object as active (for reference only)
     set_active_object(original_obj)
+    original_poly_count = len(original_obj.data.polygons)
+    print(f"Original mesh has {original_poly_count} polygons")
 
-    # First, ensure original object has proper materials and weights
-    if hasattr(original_obj, "armaObjProps"):
-        original_obj.armaObjProps.isArmaObject = True
-        original_obj.armaObjProps.mass = 1.0  # Default mass
-        original_obj.armaObjProps.weight = 1.0  # Default weight
-
-        # Apply materials to original object
-        if original_obj.vertex_groups:
-            # Create materials for each vertex group
-            assign_materials_to_groups(original_obj)
-        else:
-            # Just one default material
-            mat = create_default_material()
-            if mat.name not in original_obj.data.materials:
-                original_obj.data.materials.append(mat)
-
-    # Create FHQWeights layer on original object
-    bm = bmesh.new()
-    bm.from_mesh(original_obj.data)
-    if 'FHQWeights' not in bm.verts.layers.float:
-        weight_layer = bm.verts.layers.float.new('FHQWeights')
-        for vert in bm.verts:
-            vert[weight_layer] = 1.0
-    bm.to_mesh(original_obj.data)
-    bm.free()
-
-    # Now create LODs
+    # LOD settings with just the basic info needed
+    # Format: (checkbox_property, "LOD_name", view_distance)
+    # view_distance: 1=1m, 10=10m, 25=25m, etc.
     lod_settings = [
-        (bpy.context.scene.create_lod1, "1", 1, None),
-        (bpy.context.scene.create_lod2, "2", 2, 0.00212),
-        (bpy.context.scene.create_lod3, "3", 3, 0.00424),
-        (bpy.context.scene.create_lod4, "4", 4, 0.00848)
+        (bpy.context.scene.create_lod1, "1", 1),    # LOD1: View distance 1m
+        (bpy.context.scene.create_lod2, "2", 2),   # LOD2: View distance 10m
+        (bpy.context.scene.create_lod3, "3", 3),   # LOD3: View distance 25m
+        (bpy.context.scene.create_lod4, "4", 4),   # LOD4: View distance 50m
+        (bpy.context.scene.create_lod5, "5", 5),   # LOD5: View distance 75m
+        (bpy.context.scene.create_lod6, "6", 6)   # LOD6: View distance 100m
     ]
 
-    for create_lod, name, distance, threshold in lod_settings:
+    for create_lod, name, distance in lod_settings:
         if not create_lod:
             continue
 
-        # Create collection if it doesn't exist
+        # Create collection
         if name not in bpy.data.collections:
             collection = bpy.data.collections.new(name)
             bpy.context.scene.collection.children.link(collection)
@@ -234,67 +304,54 @@ def create_lod_meshes():
         # Set Arma properties
         if hasattr(lod_obj, "armaObjProps"):
             lod_obj.armaObjProps.isArmaObject = True
-            lod_obj.armaObjProps.lod = collections_data[name]
+            lod_obj.armaObjProps.lod = "-1.0"
             lod_obj.armaObjProps.lodDistance = distance
             lod_obj.armaObjProps.mass = original_obj.armaObjProps.mass
             lod_obj.armaObjProps.weight = 1.0
 
-            # Copy materials from original object
-            if original_obj.vertex_groups:
-                # Copy vertex groups and materials
-                for vgroup in original_obj.vertex_groups:
-                    if vgroup.name not in lod_obj.vertex_groups:
-                        lod_obj.vertex_groups.new(name=vgroup.name)
-                assign_materials_to_groups(lod_obj)
-            else:
-                # Just one default material
-                mat = create_default_material()
-                lod_obj.data.materials.append(mat)
+        # Add forceNoAlpha property to LOD1
+        if name == "1":
+            if len(lod_obj.armaObjProps.namedProps) == 0:
+                lod_obj.armaObjProps.namedProps.add()
+            lod_obj.armaObjProps.namedProps[0].name = "forcenotalpha"
+            lod_obj.armaObjProps.namedProps[0].value = "1"
 
         # Link to collection
         collection.objects.link(lod_obj)
 
-        # Apply optimization for LOD2-4
-        if threshold:
-            # Select and make active
-            bpy.ops.object.select_all(action='DESELECT')
-            lod_obj.select_set(True)
+        # Copy and setup materials
+        for mat_slot in lod_obj.material_slots:
+            if mat_slot.material:
+                # Create new material for this LOD
+                new_mat = mat_slot.material.copy()
+                new_mat.name = f"LOD{name}_{mat_slot.material.name}"
+                
+                # Set up Arma material properties
+                if hasattr(new_mat, "armaMatProps"):
+                    new_mat.armaMatProps.isArmaObject = True
+                    new_mat.armaMatProps.texture = "dz\\data\\data\\duha.paa"
+                    new_mat.armaMatProps.rvMat = "dz\\data\\data\\default.rvmat"
+                    new_mat.armaMatProps.colorString = ""
+                
+                # Assign new material to slot
+                mat_slot.material = new_mat
+
+        # Skip decimation for LOD1
+        if name == "1":
+            continue
+
+        # For LOD2-6, apply decimate modifier multiple times based on LOD level
+        for i in range(int(name) - 1):  # Subtract 1 since we start at LOD2
             bpy.context.view_layer.objects.active = lod_obj
+            decimate = lod_obj.modifiers.new(name="Decimate", type='DECIMATE')
+            decimate.decimate_type = 'COLLAPSE'
+            decimate.ratio = 0.6
+            bpy.ops.object.modifier_apply(modifier="Decimate")
             
-            # Enter edit mode and merge vertices
-            bpy.ops.object.mode_set(mode='EDIT')
-            bpy.ops.mesh.select_all(action='SELECT')
-            bpy.ops.mesh.remove_doubles(threshold=threshold)
-            bpy.ops.object.mode_set(mode='OBJECT')
+            current_polys = len(lod_obj.data.polygons)
+            print(f"LOD {name} - Iteration {i+1}: {current_polys} polygons")
 
-        print(f"Created {name} with optimization threshold: {threshold}")
-
-def create_default_material(name="default"):
-    """Creates a default white material with DayZ rvmat"""
-    if name in bpy.data.materials:
-        return bpy.data.materials[name]
-        
-    mat = bpy.data.materials.new(name=name)
-    
-    # Set up Arma material properties
-    if hasattr(mat, "armaMatProps"):
-        mat.armaMatProps.isArmaObject = True
-        mat.armaMatProps.texture = "DZ\\data\\data\\white.paa"  # Default white texture
-        mat.armaMatProps.rvMat = "DZ\\data\\data\\default.rvmat"  # Default DayZ rvmat
-        mat.armaMatProps.colorString = ""
-    
-    return mat
-
-def assign_materials_to_groups(obj):
-    """Assigns default materials to each vertex group"""
-    # Create materials for each vertex group
-    for vgroup in obj.vertex_groups:
-        mat_name = f"default_{vgroup.name}"
-        mat = create_default_material(mat_name)
-        
-        # Assign material to object if not already assigned
-        if mat.name not in obj.data.materials:
-            obj.data.materials.append(mat)
+        print(f"Created LOD {name} with {len(lod_obj.data.polygons)} polygons")
 
 def create_arma_bounding_boxes(collection_name):
     """Creates bounding box geometry for DayZ objects"""
@@ -309,14 +366,10 @@ def create_arma_bounding_boxes(collection_name):
         print("Please select a mesh object in the panel.")
         return
 
-    # Set original object as active
-    set_active_object(original_obj)
-
     print(f"Original object selected from UI: {original_obj.name}")  # Debug log
 
-    # Get world-space bounding box coordinates
-    world_matrix = original_obj.matrix_world
-    bbox_corners = [world_matrix @ mathutils.Vector(corner) for corner in original_obj.bound_box]
+    # Calculate bounding box dimensions and center
+    bbox_corners = [original_obj.matrix_world @ mathutils.Vector(corner) for corner in original_obj.bound_box]
 
     # Find min/max coordinates
     min_x = min(v.x for v in bbox_corners)
@@ -326,22 +379,13 @@ def create_arma_bounding_boxes(collection_name):
     min_z = min(v.z for v in bbox_corners)
     max_z = max(v.z for v in bbox_corners)
 
-    # Calculate dimensions
+    # Calculate dimensions and center
     width = max_x - min_x
     depth = max_y - min_y
     height = max_z - min_z
-
-    # Calculate center position
     center_x = (max_x + min_x) / 2
     center_y = (max_y + min_y) / 2
     center_z = (max_z + min_z) / 2
-
-    # Ensure the collection exists
-    if collection_name not in bpy.data.collections:
-        collection = bpy.data.collections.new(collection_name)
-        bpy.context.scene.collection.children.link(collection)
-    else:
-        collection = bpy.data.collections[collection_name]
 
     # Create a new cube
     bpy.ops.mesh.primitive_cube_add(size=1, location=(center_x, center_y, center_z))
@@ -351,11 +395,7 @@ def create_arma_bounding_boxes(collection_name):
     # Set dimensions
     bbox_obj.scale = (width / 1, depth / 1, height / 1)
 
-    # Clear any existing vertex groups
-    for vg in bbox_obj.vertex_groups:
-        bbox_obj.vertex_groups.remove(vg)
-
-    # Create single Component01 vertex group and assign all vertices
+    # Create vertex group and assign all vertices
     vertex_group = bbox_obj.vertex_groups.new(name="Component01")
     vertices = [v.index for v in bbox_obj.data.vertices]
     vertex_group.add(vertices, 1.0, 'REPLACE')
@@ -373,101 +413,31 @@ def create_arma_bounding_boxes(collection_name):
     if hasattr(bbox_obj, "armaObjProps"):
         bbox_obj.armaObjProps.isArmaObject = True
         bbox_obj.armaObjProps.lod = collections_data[collection_name]
-        
-        # Calculate mass based on volume
-        volume = width * depth * height
-        bbox_obj.armaObjProps.mass = volume * 0.5
+        bbox_obj.armaObjProps.mass = 0.0
         bbox_obj.armaObjProps.weight = 1.0
-
-        # Create and assign default material
-        if collection_name == "Geometry" or collection_name == "View Geometry":
-            # Just create one default material
-            mat = create_default_material(collection_name)
-            if mat.name not in bbox_obj.data.materials:
-                bbox_obj.data.materials.append(mat)
 
         # Add special properties for basic Geometry
         if collection_name == "Geometry":
             bbox_obj.armaObjProps.namedPropIndex = 0
-            # Create new named property if it doesn't exist
             if len(bbox_obj.armaObjProps.namedProps) == 0:
                 bbox_obj.armaObjProps.namedProps.add()
             bbox_obj.armaObjProps.namedProps[0].name = "autocenter"
             bbox_obj.armaObjProps.namedProps[0].value = "0"
 
-    # Move object to the correct collection
-    bpy.ops.object.select_all(action='DESELECT')
-    bpy.context.view_layer.objects.active = bbox_obj
-    bbox_obj.select_set(True)
+    # Create or get collection
+    if collection_name not in bpy.data.collections:
+        collection = bpy.data.collections.new(collection_name)
+        bpy.context.scene.collection.children.link(collection)
+    else:
+        collection = bpy.data.collections[collection_name]
 
+    # Move object to collection
     if bbox_obj.users_collection:
         for col in bbox_obj.users_collection:
             col.objects.unlink(bbox_obj)
-
     collection.objects.link(bbox_obj)
 
-    # Special handling for Fire Geometry
-    if collection_name == "Fire Geometry":
-        print("Starting Fire Geometry processing...")
-        
-        # Ensure we're starting in Object mode
-        if bpy.context.active_object.mode != 'OBJECT':
-            bpy.ops.object.mode_set(mode='OBJECT')
-            print("Switched to Object mode")
-            
-        # Make sure our bbox_obj is the active object
-        bpy.context.view_layer.objects.active = bbox_obj
-        bbox_obj.select_set(True)
-        print(f"Active object set to: {bbox_obj.name}")
-        
-        # Step 1: Subdivide the box using fixed subdivisions
-        print("Starting subdivision process...")
-        bpy.ops.object.mode_set(mode='EDIT')
-
-        # Apply subdivisions to match manual process
-        print("Applying subdivisions...")
-        bpy.ops.mesh.subdivide(number_cuts=4)  # Fourth with 4 cuts
-        
-        bpy.ops.mesh.select_all(action='SELECT')
-        bpy.ops.mesh.quads_convert_to_tris(quad_method='BEAUTY', ngon_method='BEAUTY')
-        print("Triangulation completed")
-        
-        # Ensure we're back in Object mode before applying modifiers
-        bpy.ops.object.mode_set(mode='OBJECT')
-        print("Switched back to Object mode")
-
-        # Make sure the bbox_obj is still the active object
-        bpy.context.view_layer.objects.active = bbox_obj
-        bbox_obj.select_set(True)
-        print(f"Active object confirmed as: {bpy.context.active_object.name}")
-
-        try:
-            # Step 2: Add Shrinkwrap modifier and apply it
-            print("Adding Shrinkwrap modifier...")
-            bpy.ops.object.modifier_add(type='SHRINKWRAP')
-            
-            if "Shrinkwrap" not in bbox_obj.modifiers:
-                print("ERROR: Shrinkwrap modifier was not added successfully")
-                return
-                
-            shrinkwrap_modifier = bbox_obj.modifiers["Shrinkwrap"]
-            print("Shrinkwrap modifier added successfully")
-
-            # Set the target to the ORIGINAL mesh object
-            print(f"Setting target to original object: {original_obj.name}")
-            shrinkwrap_modifier.target = original_obj
-            shrinkwrap_modifier.offset = 0.02
-            print("Modifier settings configured")
-
-            # Apply the Shrinkwrap modifier
-            print("Attempting to apply modifier...")
-            bpy.ops.object.modifier_apply(modifier="Shrinkwrap")
-            print("Modifier applied successfully")
-            
-        except Exception as e:
-            print(f"Error during modifier operations: {str(e)}")
-            
-        print("Fire Geometry processing completed")
+    return bbox_obj
 
 def set_active_object(obj):
     """Sets the given object as active and selected"""
@@ -720,6 +690,9 @@ def create_view_pilot(collection_name):
         pilot_obj.armaObjProps.mass = original_obj.armaObjProps.mass
         pilot_obj.armaObjProps.weight = 1.0
 
+    # Apply materials based on vertex groups
+    create_materials_for_selections(pilot_obj)
+
     # Create or get collection
     if collection_name not in bpy.data.collections:
         collection = bpy.data.collections.new(collection_name)
@@ -754,6 +727,7 @@ classes = (
     OBJECT_OT_create_geometry,
     OBJECT_OT_create_view_geometry,
     OBJECT_OT_create_fire_geometry,
+    OBJECT_OT_create_selected_fire_geometry,
     OBJECT_OT_create_view_pilot,
     OBJECT_OT_create_memory,
     OBJECT_OT_create_selected_memory,
@@ -842,6 +816,32 @@ def register():
         description="Create LOD4 (Lowest detail, 10m view distance)",
         default=False
     )
+    bpy.types.Scene.create_lod5 = bpy.props.BoolProperty(
+        name="LOD 5",
+        description="Create LOD5 (Very low detail, 75m view distance)",
+        default=False
+    )
+    bpy.types.Scene.create_lod6 = bpy.props.BoolProperty(
+        name="LOD 6",
+        description="Create LOD6 (Minimal detail, 100m view distance)",
+        default=False
+    )
+
+    # Add Fire Geometry options
+    bpy.types.Scene.show_fire_geometry_options = bpy.props.BoolProperty(
+        name="Show Fire Geometry Options",
+        description="Show options for creating Fire Geometry",
+        default=False
+    )
+
+    # Add Fire Geometry quality
+    bpy.types.Scene.fire_geometry_quality = bpy.props.IntProperty(
+        name="Fire Geometry Quality",
+        description="1 = low polygon count, 10 = high polygon count",
+        min=1,
+        max=10, 
+        default=2
+    )
 
 def unregister():
     """Unregisters all classes and properties for the addon"""
@@ -863,6 +863,88 @@ def unregister():
     del bpy.types.Scene.create_lod2
     del bpy.types.Scene.create_lod3
     del bpy.types.Scene.create_lod4
+    del bpy.types.Scene.create_lod5
+    del bpy.types.Scene.create_lod6
+    del bpy.types.Scene.show_fire_geometry_options
+    del bpy.types.Scene.fire_geometry_quality
+
+def check_polygon_count(obj):
+    """Checks if polygon count is within recommended limits"""
+    poly_count = len(obj.data.polygons)
+    
+    if poly_count > 32768:  # DirectX9 vertex normal limit
+        print(f"Warning: LOD has {poly_count} polygons, which exceeds the recommended maximum of 32,768")
+    elif poly_count < 500 and obj.name == "4":  # LOD4
+        print(f"Warning: Lowest LOD has {poly_count} polygons, recommended minimum is 500")
+
+def validate_lod(obj):
+    """Validates LOD according to Bohemia Interactive guidelines"""
+    # Check polygon count
+    poly_count = len(obj.data.polygons)
+    
+    # Check material sections
+    material_count = len(obj.data.materials)
+    
+    # Check for empty named selections
+    vertex_groups = obj.vertex_groups
+    
+    warnings = []
+    if poly_count > 32768:
+        warnings.append(f"Polygon count ({poly_count}) exceeds limit")
+    if obj.name == "4" and material_count > 2:
+        warnings.append(f"LOD4 has {material_count} materials, recommended maximum is 2")
+    
+    return warnings
+
+def create_fire_geometry(collection_name, original_obj, quality):
+    """Creates fire geometry with proper subdivision and shrinkwrapping"""
+    # Create basic bounding box
+    bbox_obj = create_arma_bounding_boxes(collection_name)
+    
+    if not bbox_obj:
+        return None
+
+    # Ensure we're in object mode to start
+    if bpy.context.active_object and bpy.context.active_object.mode != 'OBJECT':
+        bpy.ops.object.mode_set(mode='OBJECT')
+
+    # Convert to mesh for editing
+    bbox_obj.select_set(True)
+    bpy.context.view_layer.objects.active = bbox_obj
+    
+    # Enter edit mode for subdivide and triangulate
+    bpy.ops.object.mode_set(mode='EDIT')
+    
+    # Apply subdivisions
+    print(f"Applying {quality} cuts...")
+    bpy.ops.mesh.subdivide(number_cuts=quality)
+    
+    # Triangulate
+    bpy.ops.mesh.select_all(action='SELECT')
+    bpy.ops.mesh.quads_convert_to_tris(quad_method='BEAUTY', ngon_method='BEAUTY')
+    print("Triangulation completed")
+    
+    # Return to object mode for modifier operations
+    bpy.ops.object.mode_set(mode='OBJECT')
+    
+    # Add and configure shrinkwrap modifier
+    shrinkwrap = bbox_obj.modifiers.new(name="Shrinkwrap", type='SHRINKWRAP')
+    shrinkwrap.target = original_obj
+    shrinkwrap.offset = 0.02
+    shrinkwrap.wrap_mode = 'OUTSIDE_SURFACE'
+    
+    # Apply the modifier (in object mode)
+    bpy.ops.object.modifier_apply(modifier="Shrinkwrap")
+    
+    # Verify counts
+    vert_count = len(bbox_obj.data.vertices)
+    tri_count = len(bbox_obj.data.polygons)
+    print(f"Fire Geometry created with {vert_count} vertices and {tri_count} triangles")
+    
+    # Ensure object is named correctly
+    bbox_obj.name = "Component01"
+    
+    return bbox_obj
 
 if __name__ == "__main__":
     register()
