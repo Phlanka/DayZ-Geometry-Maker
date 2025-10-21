@@ -4,7 +4,7 @@ bl_info = {
     "category": "Object",
     "description": "Addon for creating geometry for DayZ Mod",
     "author": "Phlanka.com",
-    "version": (1, 0, 2),
+    "version": (1, 0, 3),
 }
 
 import bpy
@@ -155,12 +155,37 @@ class OBJECT_PT_create_dayz_geometry(bpy.types.Panel):
             box.operator("object.create_selected_lods", text="Create Selected LODs")
 
         # Add Export P3D button that checks for ArmaToolbox
+        # Prefer checking for the registered operator on bpy.ops instead of importing
+        # the addon module directly. The addon may be enabled but not importable by
+        # its package name from this script's path.
         try:
-            import ArmaToolbox
-            layout.operator("armatoolbox.export_p3d", text="Export P3D")
-        except ImportError:
+            import bpy
+            has_export_op = False
+
+            # Common registration: the operator is available as bpy.ops.armatoolbox.export_p3d
+            if hasattr(bpy.ops, 'armatoolbox'):
+                has_export_op = hasattr(bpy.ops.armatoolbox, 'export_p3d')
+
+            # Fallback: inspect operator registry by bl_idname
+            if not has_export_op:
+                from bpy.utils import registered_operators
+                # registered_operators is an iterable of bl_idnames in newer Blender builds
+                try:
+                    has_export_op = 'armatoolbox.export_p3d' in registered_operators()
+                except Exception:
+                    # Older/blender-compatibility: inspect bpy.ops manually already handled
+                    pass
+
+            if has_export_op:
+                layout.operator("armatoolbox.export_p3d", text="Export P3D")
+            else:
+                row = layout.row()
+                row.label(text="ArmaToolbox not installed or export operator not registered")
+                row.operator("wm.url_open", text="Get ArmaToolbox").url = "https://github.com/AlwarrenSidh/ArmAToolbox"
+        except Exception:
+            # Don't let any unexpected error break the panel draw
             row = layout.row()
-            row.label(text="ArmaToolbox not installed")
+            row.label(text="ArmaToolbox check failed")
             row.operator("wm.url_open", text="Get ArmaToolbox").url = "https://github.com/AlwarrenSidh/ArmAToolbox"
 
 # Add new operator for LOD creation
