@@ -37,9 +37,9 @@ Get it at: [beta.phlanka.com](https://beta.phlanka.com/)
 ## Installation
 
 1. Download the latest release `.zip` from the [Releases](https://github.com/Phlanka/DayZ-Geometry-Maker/releases) page
-2. In Blender, go to **Edit → Preferences → Extensions**
-3. Click **Install from Disk** and select the `.zip`
-4. Enable **DayZ Geometry Maker** in the extensions list
+2. **Drag and drop** the `.zip` directly into the Blender window — it will install automatically
+
+   *Alternatively:* go to **Edit → Preferences → Extensions**, click **Install from Disk** and select the `.zip`
 
 The panel will appear in the **3D Viewport → N Panel → DayZ** tab.
 
