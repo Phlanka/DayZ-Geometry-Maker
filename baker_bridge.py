@@ -244,15 +244,13 @@ def _fix_rvmat_paths(rvmat_path: str, temp_dir: str, final_dir: str, model_name:
 
         # Identify which suffix tag this file carries
         stem_lower = os.path.splitext(os.path.basename(no_drive))[0].lower()
-        ext = os.path.splitext(no_drive)[1].lower() or ".paa"
-        # Keep actual extension — baker may write .png if PAA conversion is off
+        # Always write .paa in RVMAT paths — user converts the actual file manually
 
         matched_tag = next((t for t in _TAGS if stem_lower.endswith(t)), None)
         if matched_tag:
-            new_name = base + matched_tag + ext
+            new_name = base + matched_tag + ".paa"
         else:
-            # Unknown suffix — keep original filename but move to final dir
-            new_name = base + ext
+            new_name = base + ".paa"
 
         new_rel = os.path.join(final_dir, new_name)
         # Strip drive letter from final path
@@ -395,9 +393,10 @@ def run_baker_and_assign(operator, objects: list, model_name: str, p3d_filepath:
         for sel_name in sel_names:
             base = "{}_{}".format(_model, sel_name) if _model else sel_name
 
-            # Copy every tagged texture map, preserving actual file extension
+            # Copy every tagged texture map.
+            # Destination always uses .paa — if baker wrote .png, user converts it.
             for tag, (src, actual_ext) in tagged.items():
-                dst = os.path.join(_final, base + tag + actual_ext)
+                dst = os.path.join(_final, base + tag + ".paa")
                 try:
                     shutil.copy2(src, dst)
                 except Exception as e:
