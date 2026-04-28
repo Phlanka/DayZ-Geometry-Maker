@@ -374,13 +374,6 @@ def create_shadow_volumes():
                         sv_obj.scale.z * scale_factor)
         bpy.ops.object.transform_apply(scale=True)
 
-        # For shadow 2 (far), decimate heavily
-        if i == 1:
-            dec = sv_obj.modifiers.new("Decimate", 'DECIMATE')
-            dec.decimate_type = 'COLLAPSE'
-            dec.ratio = 0.3
-            bpy.ops.object.modifier_apply(modifier="Decimate")
-
         # Wiki requirements: triangulated + all edges sharp
         triangulate_object(sv_obj)
         mark_all_sharp(sv_obj)
