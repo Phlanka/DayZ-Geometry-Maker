@@ -2,6 +2,14 @@
 
 ## [Unreleased]
 
+---
+
+## [2.0.2] - 2026-04-28
+
+### Added
+- **Geometry from Selection** — go into Edit Mode on your target mesh, select any vertices or faces, and click the new button to create a convex hull geometry component wrapping exactly that selection. Useful for complex shapes like pillars, arches, or individual parts of a scan mesh. Falls back to full bounding box if fewer than 4 verts are selected.
+- Improved tooltip descriptions on all geometry buttons so their purpose is clear on hover.
+
 ### Fixed
 - Shadow Volume 2 no longer decimates the mesh. Both shadow volumes now use the full geometry, only scaled slightly (0.99 / 0.97) to prevent self-shadowing. Previously the 0.3 ratio was distorting low-poly models.
 - Baked texture files are now copied to `data/` with their original extension (`.png` or `.paa`). P3D and RVMAT texture path references always use `.paa` — if the baker wrote `.png`, convert it externally.

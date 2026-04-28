@@ -176,6 +176,80 @@ def _next_geometry_component_index():
     return idx
 
 
+
+
+def create_geometry_from_selection(operator, mass=100.0):
+    """
+    Geometry LOD component from selected verts in Edit Mode.
+    Reads selected vert world positions, exits Edit Mode, then builds a convex
+    hull from those positions and creates a new ComponentXX object from it.
+    Falls back to full-object bbox if not in Edit Mode or nothing is selected.
+    """
+    original_obj = bpy.context.scene.dgm_target_object
+    if not original_obj or original_obj.type != 'MESH':
+        operator.report({'ERROR'}, "No target object set.")
+        return None
+
+    # Collect selected vert world positions while still in Edit Mode
+    selected_world_verts = []
+    if original_obj.mode == 'EDIT':
+        bm = bmesh.from_edit_mesh(original_obj.data)
+        bm.verts.ensure_lookup_table()
+        wm = original_obj.matrix_world
+        selected_world_verts = [wm @ v.co.copy() for v in bm.verts if v.select]
+        # Do NOT free bm from edit mesh
+
+    if len(selected_world_verts) < 4:
+        operator.report({'WARNING'}, "Select at least 4 vertices for a convex hull. Falling back to full object bbox.")
+        ensure_object_mode()
+        return create_geometry(mass=mass)
+
+    # Exit Edit Mode before creating new objects
+    bpy.ops.object.mode_set(mode='OBJECT')
+
+    # Build convex hull from selected positions using bmesh
+    hull_bm = bmesh.new()
+    for co in selected_world_verts:
+        hull_bm.verts.new(co)
+    hull_bm.verts.ensure_lookup_table()
+    result = bmesh.ops.convex_hull(hull_bm, input=hull_bm.verts)
+
+    # Remove geometry not on the hull (interior verts/faces)
+    for geom in result.get("geom_interior", []):
+        if isinstance(geom, bmesh.types.BMVert):
+            hull_bm.verts.remove(geom)
+
+    # Create new mesh and object from the hull
+    hull_mesh = bpy.data.meshes.new("hull_tmp")
+    hull_bm.to_mesh(hull_mesh)
+    hull_bm.free()
+
+    comp_idx = _next_geometry_component_index()
+    comp_name = "Component{:02d}".format(comp_idx)
+
+    obj = bpy.data.objects.new("Geometry_{}".format(comp_name), hull_mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    bpy.context.view_layer.objects.active = obj
+    obj.select_set(True)
+
+    vg = obj.vertex_groups.new(name=comp_name)
+    vg.add([v.index for v in obj.data.vertices], 1.0, 'REPLACE')
+
+    add_fhq_weights(obj, weight=mass / max(len(obj.data.vertices), 1))
+
+    set_dgm_props(obj, LOD_VALUES["Geometry"], mass=mass)
+    clear_named_props(obj)
+    add_named_prop(obj, "autocenter", "0")
+    add_named_prop(obj, "canbeoccluded", "1")
+    add_named_prop(obj, "canocclude", "0")
+
+    assign_default_material(obj)
+    move_to_collection(obj, "Geometry")
+
+    operator.report({'INFO'}, "Created {} from {} selected verts.".format(comp_name, len(selected_world_verts)))
+    return obj
+
+
 def create_geometry(mass=100.0):
     """
     Geometry LOD: one cube per call, each named ComponentXX.

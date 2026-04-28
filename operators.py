@@ -14,9 +14,9 @@ class DGM_OT_create_geometry(bpy.types.Operator):
     bl_idname = "dgm.create_geometry"
     bl_label = "Create Geometry"
     bl_description = (
-        "Bounding-box collision LOD (1e13). "
-        "Must be closed+convex, Component01 named, has mass. "
-        "autocenter=0 and canbeoccluded=1 added automatically"
+        "Adds a box-shaped geometry component around the entire target object. "
+        "Use this as a starting point — move and resize the box in the viewport to fit your model. "
+        "Click multiple times to add more components for complex shapes"
     )
     bl_options = {'REGISTER', 'UNDO'}
 
@@ -40,6 +40,40 @@ class DGM_OT_create_geometry(bpy.types.Operator):
             return {'CANCELLED'}
         geometry.create_geometry(mass=self.mass)
         return {'FINISHED'}
+
+
+
+class DGM_OT_create_geometry_from_selection(bpy.types.Operator):
+    bl_idname = "dgm.create_geometry_from_selection"
+    bl_label = "Geometry from Selection"
+    bl_description = (
+        "Go into Edit Mode on your target mesh, select the vertices or faces "
+        "you want covered, then click this. A convex hull component is built "
+        "around exactly those selected verts. Useful for complex shapes like "
+        "pillars, arches, or individual parts of a larger mesh"
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    mass: bpy.props.FloatProperty(
+        name="Mass (kg)",
+        description="Object mass — minimum 10 for character collision",
+        default=100.0,
+        min=0.0,
+    )
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def draw(self, context):
+        self.layout.prop(self, "mass")
+        self.layout.label(text="Select verts in Edit Mode before clicking", icon='INFO')
+
+    def execute(self, context):
+        if not context.scene.dgm_target_object:
+            self.report({'ERROR'}, "Select a target object first")
+            return {'CANCELLED'}
+        result = geometry.create_geometry_from_selection(self, mass=self.mass)
+        return {'FINISHED'} if result else {'CANCELLED'}
 
 
 class DGM_OT_create_view_geometry(bpy.types.Operator):
@@ -655,8 +689,9 @@ class DGM_PT_main_panel(bpy.types.Panel):
         box = layout.box()
         box.label(text="Collision & Functional", icon='MESH_CUBE')
         col = box.column(align=True)
-        col.operator("dgm.create_geometry",      text="Geometry (1e13)")
-        col.operator("dgm.create_view_geometry", text="View Geometry (6e15)")
+        col.operator("dgm.create_geometry",                  text="Add Geometry")
+        col.operator("dgm.create_geometry_from_selection",   text="Add Geometry from Selection")
+        col.operator("dgm.create_view_geometry",             text="View Geometry (6e15)")
 
         # Fire Geometry
         col.operator("dgm.create_fire_geometry", text="Fire Geometry (7e15)")
@@ -853,6 +888,7 @@ def unregister_scene_props():
 
 operator_classes = (
     DGM_OT_create_geometry,
+    DGM_OT_create_geometry_from_selection,
     DGM_OT_create_view_geometry,
     DGM_OT_toggle_fire,
     DGM_OT_create_fire_geometry,

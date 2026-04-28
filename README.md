@@ -10,7 +10,7 @@ Built and maintained by [Phlanka](https://phlanka.com).
 
 - **P3D Export** — Export directly to the Arma MLOD P3D format from Blender
 - **Resolution LODs** — Generate up to 6 resolution LODs with automatic decimation
-- **Geometry LOD** — Add convex geometry components (Component01, Component02...) with one click
+- **Geometry LOD** — Add convex geometry components with one click, or select faces/verts in Edit Mode and generate a convex hull component from exactly that selection
 - **Fire Geometry** — Reuses your geometry boxes automatically
 - **Roadway LOD** — Extracts upward-facing faces from geometry boxes for accurate walkable surfaces
 - **Memory LOD** — Bounding box, inventory camera, doors, lights, weapon points and more
