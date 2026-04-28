@@ -14,7 +14,7 @@ import zipfile
 import shutil
 
 GITHUB_API = "https://api.github.com/repos/Phlanka/DayZ-Geometry-Maker/releases/latest"
-CURRENT_VERSION = (2, 0, 0)
+CURRENT_VERSION = (2, 0, 1)
 ADDON_ID = "dayz_geometry_maker"
 
 _update_available = False
