@@ -245,9 +245,7 @@ def _fix_rvmat_paths(rvmat_path: str, temp_dir: str, final_dir: str, model_name:
         # Identify which suffix tag this file carries
         stem_lower = os.path.splitext(os.path.basename(no_drive))[0].lower()
         ext = os.path.splitext(no_drive)[1].lower() or ".paa"
-        # Force .paa extension for texture files
-        if ext in (".png", ".tga", ".bmp"):
-            ext = ".paa"
+        # Keep actual extension — baker may write .png if PAA conversion is off
 
         matched_tag = next((t for t in _TAGS if stem_lower.endswith(t)), None)
         if matched_tag:
@@ -365,43 +363,31 @@ def run_baker_and_assign(operator, objects: list, model_name: str, p3d_filepath:
             _restore_baker_output(_final)
             return None
 
-        # Map each new file to its suffix tag and extension.
-        # The baker writes e.g. Cube_CO.paa, Cube_NOHQ.paa, Cube_SMDI.paa,
-        # Cube_EM.paa (emissive), Cube_AS.paa (ambient shadow), Cube.rvmat.
-        # We match by the known suffixes, case-insensitive.
-        _SUFFIX_MAP = {
-            # (lower suffix including dot) : output tag used in our naming
-            "_co.paa":   "_co.paa",
-            "_co.png":   "_co.paa",   # rename to .paa even if baker wrote .png
-            "_nohq.paa": "_nohq.paa",
-            "_nohq.png": "_nohq.paa",
-            "_smdi.paa": "_smdi.paa",
-            "_smdi.png": "_smdi.paa",
-            "_em.paa":   "_em.paa",
-            "_em.png":   "_em.paa",
-            "_as.paa":   "_as.paa",
-            "_as.png":   "_as.paa",
-        }
+        # Map each new file to its suffix tag (stem only, no extension).
+        # The baker may write .paa or .png depending on addon preferences.
+        # We keep the actual file extension when copying — the P3D paths always
+        # say .paa so the user can convert manually if needed.
+        _STEM_TAGS = ("_co", "_nohq", "_smdi", "_em", "_as")
+        _TEXTURE_EXTS = (".paa", ".png", ".tga", ".bmp")
 
-        # Bucket each new file by tag
-        tagged = {}       # tag -> src_path
+        # Bucket each new file by stem tag  ->  (src_path, actual_ext)
+        tagged = {}       # stem_tag -> (src_path, actual_ext)
         rv_src = None
         temp_stem = ""
         for fpath in new_files:
-            fname_lower = os.path.basename(fpath).lower()
+            fname = os.path.basename(fpath)
+            fname_lower = fname.lower()
             if fname_lower.endswith(".rvmat"):
                 rv_src = fpath
                 continue
-            for suffix, tag in _SUFFIX_MAP.items():
-                if fname_lower.endswith(suffix):
-                    tagged[tag] = fpath
-                    # Derive the temp stem from the CO file
-                    if suffix in ("_co.paa", "_co.png") and not temp_stem:
-                        stem = os.path.splitext(os.path.basename(fpath))[0]
-                        if stem.lower().endswith("_co"):
-                            stem = stem[:-3]
-                        temp_stem = stem
-                    break
+            stem_lower, ext_lower = os.path.splitext(fname_lower)
+            if ext_lower not in _TEXTURE_EXTS:
+                continue
+            matched_tag = next((t for t in _STEM_TAGS if stem_lower.endswith(t)), None)
+            if matched_tag:
+                tagged[matched_tag] = (fpath, ext_lower)
+                if matched_tag == "_co" and not temp_stem:
+                    temp_stem = fname[:len(fname) - len(matched_tag) - len(ext_lower)]
 
         os.makedirs(_final, exist_ok=True)
 
@@ -409,9 +395,9 @@ def run_baker_and_assign(operator, objects: list, model_name: str, p3d_filepath:
         for sel_name in sel_names:
             base = "{}_{}".format(_model, sel_name) if _model else sel_name
 
-            # Copy every tagged texture map
-            for tag, src in tagged.items():
-                dst = os.path.join(_final, base + tag)
+            # Copy every tagged texture map, preserving actual file extension
+            for tag, (src, actual_ext) in tagged.items():
+                dst = os.path.join(_final, base + tag + actual_ext)
                 try:
                     shutil.copy2(src, dst)
                 except Exception as e:
