@@ -393,10 +393,10 @@ def run_baker_and_assign(operator, objects: list, model_name: str, p3d_filepath:
         for sel_name in sel_names:
             base = "{}_{}".format(_model, sel_name) if _model else sel_name
 
-            # Copy every tagged texture map.
-            # Destination always uses .paa — if baker wrote .png, user converts it.
+            # Copy every tagged texture map with its actual extension.
+            # P3D and RVMAT paths always reference .paa — user converts if needed.
             for tag, (src, actual_ext) in tagged.items():
-                dst = os.path.join(_final, base + tag + ".paa")
+                dst = os.path.join(_final, base + tag + actual_ext)
                 try:
                     shutil.copy2(src, dst)
                 except Exception as e:
