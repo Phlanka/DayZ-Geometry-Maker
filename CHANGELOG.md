@@ -4,6 +4,15 @@
 
 ---
 
+## [2.0.3] - 2026-04-29
+
+### Fixed
+- Auto-updater now correctly shows the update banner in the panel when a newer version is available. Previously the background check detected the update but the UI never refreshed — a main-thread polling timer now triggers a redraw as soon as the check completes.
+- Per-selection baking: when a target object has multiple material slots / vertex groups, the baker now bakes each named selection individually (isolate geometry → bake → collect files → rejoin), so each selection gets its own correctly named texture set instead of all selections sharing the same baked output.
+- `data_temp/` folder is now fully removed after baking completes rather than leaving an empty directory behind.
+
+---
+
 ## [2.0.2] - 2026-04-28
 
 ### Added

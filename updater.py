@@ -14,7 +14,7 @@ import zipfile
 import shutil
 
 GITHUB_API = "https://api.github.com/repos/Phlanka/DayZ-Geometry-Maker/releases/latest"
-CURRENT_VERSION = (2, 0, 2)
+CURRENT_VERSION = (2, 0, 3)
 ADDON_ID = "dayz_geometry_maker"
 
 _update_available = False
@@ -43,6 +43,7 @@ def _check_thread():
 
         tag = data.get("tag_name", "")
         remote = _parse_version(tag)
+        print("[DGM] Updater: current={} remote={} tag={}".format(CURRENT_VERSION, remote, tag))
         if remote > CURRENT_VERSION:
             _update_available = True
             _latest_version_str = tag
@@ -58,9 +59,36 @@ def _check_thread():
         pass
 
 
+def _poll_for_update():
+    """
+    Timer callback running on the main thread.
+    Polls until the background check thread has set _update_available,
+    then tags all VIEW_3D regions for redraw so the banner appears.
+    Returns None (stop) once the flag is set or after ~30s of polling.
+    """
+    global _poll_count
+    _poll_count = getattr(_poll_for_update, "_count", 0) + 1
+    _poll_for_update._count = _poll_count
+
+    if _update_available:
+        for window in bpy.context.window_manager.windows:
+            for area in window.screen.areas:
+                if area.type == 'VIEW_3D':
+                    area.tag_redraw()
+        print("[DGM] Updater: update {} available — panel redrawn.".format(_latest_version_str))
+        return None  # stop polling
+
+    if _poll_count >= 60:  # 60 × 0.5s = 30s timeout
+        return None
+
+    return 0.5  # check again in 0.5s
+
+
 def check_for_update():
+    _poll_for_update._count = 0
     t = threading.Thread(target=_check_thread, daemon=True)
     t.start()
+    bpy.app.timers.register(_poll_for_update, first_interval=1.0)
 
 
 def _do_install(operator):
