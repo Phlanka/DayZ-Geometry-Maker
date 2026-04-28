@@ -1,0 +1,21 @@
+schema_version = "1.0.0"
+
+id = "dayz_geometry_maker"
+version = "2.0.0"
+name = "DayZ Geometry Maker"
+tagline = "Create DayZ/Arma P3D geometry LODs, memory points, and export to P3D without ArmaToolbox"
+maintainer = "Phlanka <phlanka.com@gmail.com>"
+type = "add-on"
+
+blender_version_min = "4.2.0"
+
+license = ["SPDX:GPL-3.0-or-later"]
+copyright = ["2024 Phlanka"]
+
+website = "https://github.com/Phlanka/DayZ-Geometry-Maker"
+
+tags = ["Object", "Export", "Import"]
+
+[permissions]
+network = "Check for updates from GitHub on startup"
+files = "Export P3D files to disk"

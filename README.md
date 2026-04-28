@@ -1,111 +1,93 @@
-# DayZ Geometry Maker for Blender
+# DayZ Geometry Maker
 
-A Blender addon that simplifies the creation of DayZ mod geometries and memory points. This tool allows modders to set up their model's collision boxes, view geometries, and memory points directly in Blender instead of using DayZ's Object Builder.
+A free, open-source Blender 5.0 extension for creating and exporting DayZ / Arma P3D models — no ArmaToolbox required.
 
-## Using The Tool
-[![DayZ Geometry Maker Usage](https://img.youtube.com/vi/k2En_IpPORc/0.jpg)](https://youtu.be/k2En_IpPORc)
+Built and maintained by [Phlanka](https://phlanka.com).
+
+---
 
 ## Features
 
-- Create all required geometry types:
-  - Basic Geometry (collision with autocenter)
-  - View Geometry (object visibility)
-  - View Pilot (exact copy of original model with LOD value for View Pilot)
-  - Fire Geometry (bullet collision)
-- Set up Memory Points:
-  - Bounding Box Points (min/max)
-  - Center and Radius Points
-  - Bullet Travel Points
-  - Bolt Axis Points
-  - Bullet Ejection Points
-  - Eye ADS Point
-  - Custom Invview Point
-- Create LOD Levels:
-  - LOD 1 (Original high-poly model)
-  - LOD 2 (Optimized with merged vertices)
-  - LOD 3 (Further optimized for distance)
-  - LOD 4 (Highly optimized for far distance)
+- **P3D Export** — Export directly to the Arma MLOD P3D format from Blender
+- **Resolution LODs** — Generate up to 6 resolution LODs with automatic decimation
+- **Geometry LOD** — Add convex geometry components (Component01, Component02...) with one click
+- **Fire Geometry** — Reuses your geometry boxes automatically
+- **Roadway LOD** — Extracts upward-facing faces from geometry boxes for accurate walkable surfaces
+- **Memory LOD** — Bounding box, inventory camera, doors, lights, weapon points and more
+- **Named Selections** — Synced from vertex groups, with hidden selection export names
+- **model.cfg generation** — Writes a CfgModels / CfgSkeletons config alongside the P3D
+- **Correct normals** — Deduplicated split normals written with proper Arma axis mapping — no F5 needed in Object Builder
+- **Texture Baker integration** — Optional integration with [DayZ Texture Tools](https://beta.phlanka.com/) to bake and assign textures at export time
 
-## Installation
-
-1. Download the `create_geometry.py` file
-2. Open Blender
-3. Go to Edit > Preferences > Add-ons
-4. Click "Install" and select the downloaded file
-5. Enable the addon by checking the box
-
-## Usage
-
-1. Import your model into Blender
-2. Open the Tool panel in the 3D View (press N if not visible)
-3. Find the "Create DayZ Geometry" section
-4. Select your model in the object picker
-5. Create geometries:
-   - Click "Create Geometry" for basic collision
-   - Click "Create View Geometry" for visibility
-   - Click "Create Fire Geometry" for bullet collision
-6. Set up memory points:
-   - Click "Create Memory" to show options
-   - Select which points you want to create
-   - Click "Create Selected Memory Points"
-7. Create LOD levels:
-   - Click "Levels of Detail" to show options
-   - Select which LOD levels you want
-   - Click "Create Selected LODs"
-
-## Memory Points Explained
-
-- **Default Points**:
-  - boundingbox_min/max: Define object bounds
-  - invview: Camera position for inventory view
-- **Center Point**: Object's center of mass
-- **Radius Point**: Collision radius reference
-- **Bullet Travel Points**: Define bullet trajectory
-- **Bolt Axis Points**: Define bolt movement path
-- **Bullet Eject Points**: Define casing ejection path
-- **Eye ADS Point**: Defines aiming position
-
-## LOD System
-
-The addon creates optimized versions of your model for different view distances:
-- **1**: Original high-quality mesh
-- **2**: Slightly optimized (merged vertices at 0.00212 distance)
-- **3**: Medium optimization (merged vertices at 0.00424 distance)
-- **4**: High optimization (merged vertices at 0.00848 distance)
-
-## Benefits Over Object Builder
-
-- Direct visualization in Blender
-- Faster workflow
-- More precise point placement
-- Better integration with modeling process
-- Automatic calculations for geometry sizes
-- One-click LOD creation
+---
 
 ## Requirements
 
-- Blender 4.0 or newer
-- Basic understanding of DayZ modding concepts
+- Blender **5.0** or later (minimum 4.2)
+- No other addons required for core P3D export
 
-## Contributing
+### Optional — Texture Baking
 
-Feel free to contribute to this project by:
-- Reporting issues
-- Suggesting improvements
-- Submitting pull requests
+To use the built-in texture baking workflow you need the **Phlanka Blender addon** with the **Texture Baker module** installed and licensed.
 
-## Credits
+Get it at: [beta.phlanka.com](https://beta.phlanka.com/)
 
-Created by [Phlanka.com](https://phlanka.com)
+---
 
-## Support
+## Installation
 
-Join our Discord community: [http://discord.phlanka.com](http://discord.phlanka.com)
+1. Download the latest release `.zip` from the [Releases](https://github.com/Phlanka/DayZ-Geometry-Maker/releases) page
+2. In Blender, go to **Edit → Preferences → Extensions**
+3. Click **Install from Disk** and select the `.zip`
+4. Enable **DayZ Geometry Maker** in the extensions list
 
-If you find this addon helpful and would like to fuel more development:
+The panel will appear in the **3D Viewport → N Panel → DayZ** tab.
 
-☕ [Buy me a coffee](http://paypal.me/phlankaGB)
+---
+
+## Quick Start
+
+1. Select or create a mesh object
+2. Set it as the **Target Object** in the DayZ panel
+3. Use **Add Geometry** to create geometry components
+4. Use the **LODs** section to generate resolution LODs
+5. Add named selections via vertex groups and the **Named Selections** panel
+6. Click **Export P3D** to export
+
+---
+
+## Texture Baking (with DayZ Texture Tools)
+
+If you have the Phlanka Texture Baker addon installed and licensed:
+
+1. Add vertex groups to your mesh and sync them as named selections
+2. Toggle **Bake** on the selections you want to bake
+3. Set bake options (resolution, CO/NOHQ/SMDI/EM/AS/RVMAT) in the Named Selections panel
+4. Export your P3D — the baker runs automatically after the file is written
+5. Baked images are placed in a `data/` folder next to your P3D, named `modelname_selectionname_co.paa` etc.
+
+---
 
 ## License
 
-This project is open source and available under the [MIT License](LICENSE) 
+This project is licensed under the **GNU General Public License v3.0** with additional terms:
+
+- You may use, modify, and share this addon freely
+- **You may not sell** this addon or any derivative as a standalone or bundled product
+- Any derivative work must be released as open source under the same license
+- See [LICENSE](LICENSE) for full terms
+
+---
+
+## Contributing
+
+Pull requests are welcome. Please keep changes focused and open source.
+
+For bug reports and feature requests, open an issue on GitHub.
+
+---
+
+## Credits
+
+- Export pipeline informed by [Arma3ObjectBuilder](https://github.com/MrClock8163/Arma3ObjectBuilder) (GPL-3.0) by MrClock8163
+- Built for the DayZ modding community
