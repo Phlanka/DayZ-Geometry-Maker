@@ -68,6 +68,15 @@ If you have the Phlanka Texture Baker addon installed and licensed:
 
 ---
 
+## Support
+
+Maintaining and improving this project takes time.  
+If it's helped you, you can support its development here:
+
+[![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://paypal.me/PhlankaGB)
+
+---
+
 ## License
 
 This project is licensed under the **GNU General Public License v3.0** with additional terms:
