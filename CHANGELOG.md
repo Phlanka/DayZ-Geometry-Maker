@@ -4,6 +4,16 @@
 
 ---
 
+## [2.0.4] - 2026-04-29
+
+### Fixed
+- Baked textures now always output to a `data/` folder next to the exported P3D file. Previously the baker panel output path (set in the Phlanka addon) was used instead, causing textures to land in the wrong location regardless of where the P3D was saved.
+- The texture path preview shown in the export dialog now correctly reflects the P3D save location.
+- Per-selection baking no longer crashes on the second selection when the vertex group name differs from the hidden selection export name — the isolate step now correctly looks up the vertex group by its Blender name rather than the export name.
+- `data_temp/` folder is recreated between selections so subsequent bakes don't error with a missing directory.
+
+---
+
 ## [2.0.3] - 2026-04-29
 
 ### Fixed

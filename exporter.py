@@ -688,12 +688,14 @@ class DGM_OT_export_p3d(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
         else:
             objects = list(bpy.data.objects)
 
-        # Resolve bake output dir and model name before writing P3D
+        # Resolve bake output dir and model name before writing P3D.
+        # Always derive from the P3D export path so textures land next to the model.
         if self.bake_textures:
             model_name = os.path.splitext(os.path.basename(self.filepath))[0]
-            output_dir = baker_bridge.baker_output_path()
-            if not output_dir and self.filepath:
+            if self.filepath:
                 output_dir = os.path.join(os.path.dirname(bpy.path.abspath(self.filepath)), "data")
+            else:
+                output_dir = baker_bridge.baker_output_path()
             output_dir = bpy.path.abspath(output_dir) if output_dir else ""
             bake_rvmat = getattr(context.scene, "dayz_bake_rvmat", False)
 
@@ -749,9 +751,10 @@ class DGM_OT_export_p3d(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
         if not licensed:
             col.label(text="Not licensed — activate in Preferences > DayZ Texture Tools", icon='LOCKED')
         elif self.bake_textures:
-            output = baker_bridge.baker_output_path()
-            if not output and self.filepath:
+            if self.filepath:
                 output = os.path.join(os.path.dirname(self.filepath), "data") + os.sep
+            else:
+                output = baker_bridge.baker_output_path()
             col.label(
                 text="Output: {}".format(output or "Set P3D path first"),
                 icon='FILE_FOLDER' if output else 'INFO',

@@ -366,12 +366,14 @@ def run_baker_and_assign(operator, objects: list, model_name: str, p3d_filepath:
         )
         return False
 
-    # Resolve the final data/ dir
-    final_dir = baker_output_path()
-    if not final_dir:
-        if p3d_filepath:
-            final_dir = os.path.join(os.path.dirname(bpy.path.abspath(p3d_filepath)), "data")
-        else:
+    # Resolve the final data/ dir — always prefer the P3D export location so
+    # textures land next to the model. Fall back to the baker panel path only
+    # if no P3D path is known.
+    if p3d_filepath:
+        final_dir = os.path.join(os.path.dirname(bpy.path.abspath(p3d_filepath)), "data")
+    else:
+        final_dir = baker_output_path()
+        if not final_dir:
             operator.report({'ERROR'}, "No bake output path set and no P3D path known.")
             return False
 
@@ -391,27 +393,34 @@ def run_baker_and_assign(operator, objects: list, model_name: str, p3d_filepath:
                 target_obj = obj
                 break
 
-    sel_names = []
+    # List of (sel_name, vgroup_name) pairs — sel_name is what gets written to filenames,
+    # vgroup_name is used to isolate the geometry on the target object.
+    sel_entries = []
     if target_obj:
         for sm_obj in bpy.data.objects:
             props = getattr(sm_obj, "dgm_props", None)
             if props is None or not props.is_dayz_object:
                 continue
             for sm in props.selection_mats:
-                name = _selection_base_name(sm)
-                if name and name not in sel_names:
-                    # Only include if there's a matching vertex group on the target
-                    if target_obj.vertex_groups.get(name):
-                        sel_names.append(name)
+                sel_name = _selection_base_name(sm)
+                vgroup_name = sm.vgroup_name or sel_name
+                if not sel_name:
+                    continue
+                if any(e[0] == sel_name for e in sel_entries):
+                    continue
+                # Use vgroup_name to find the vertex group — sel_name may differ
+                vg = target_obj.vertex_groups.get(vgroup_name) or target_obj.vertex_groups.get(sel_name)
+                if vg:
+                    sel_entries.append((sel_name, vg.name))
 
-    if not sel_names:
+    if not sel_entries:
         operator.report({'WARNING'}, "No named selections with vertex groups found to bake.")
         return False
 
     bake_rvmat = getattr(bpy.context.scene, "dayz_bake_rvmat", False)
 
     # Queue state — captured by the timer closures
-    queue = list(sel_names)  # mutable list, pop from front
+    queue = list(sel_entries)  # mutable list of (sel_name, vgroup_name), pop from front
     state = {
         "phase": "idle",          # idle | baking | collecting
         "current_sel": None,
@@ -501,12 +510,12 @@ def run_baker_and_assign(operator, objects: list, model_name: str, p3d_filepath:
             print("[DGM] Per-selection bake complete.")
             return None
 
-        sel_name = queue.pop(0)
+        sel_name, vgroup_name = queue.pop(0)
         state["current_sel"] = sel_name
-        print("[DGM] Baking selection: '{}'".format(sel_name))
+        print("[DGM] Baking selection: '{}' (vertex group: '{}')".format(sel_name, vgroup_name))
 
-        # Isolate this selection's geometry
-        tmp_obj = _isolate_selection_as_object(target_obj, sel_name)
+        # Isolate this selection's geometry using its vertex group name
+        tmp_obj = _isolate_selection_as_object(target_obj, vgroup_name)
         if tmp_obj is None:
             print("[DGM] No geometry for selection '{}', skipping.".format(sel_name))
             return 0.1  # skip to next immediately
@@ -518,7 +527,8 @@ def run_baker_and_assign(operator, objects: list, model_name: str, p3d_filepath:
         tmp_obj.select_set(True)
         bpy.context.view_layer.objects.active = tmp_obj
 
-        # Point baker at temp_dir
+        # Point baker at temp_dir (recreate if previous selection deleted it)
+        os.makedirs(temp_dir, exist_ok=True)
         _set_baker_output(temp_dir)
 
         # Snapshot existing files
@@ -571,5 +581,5 @@ def run_baker_and_assign(operator, objects: list, model_name: str, p3d_filepath:
     # Kick off the first selection via timer (needs main thread)
     state["phase"] = "idle"
     bpy.app.timers.register(_tick, first_interval=0.1)
-    operator.report({'INFO'}, "Baking {} selection(s) individually...".format(len(sel_names)))
+    operator.report({'INFO'}, "Baking {} selection(s) individually...".format(len(sel_entries)))
     return True
