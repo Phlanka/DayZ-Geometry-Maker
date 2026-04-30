@@ -273,8 +273,13 @@ def create_geometry(mass=100.0):
     bpy.ops.mesh.primitive_cube_add(size=1, location=(cx, cy, cz))
     obj = bpy.context.object
     obj.name = "Geometry_{}".format(comp_name)
-    obj.scale = (max_x - min_x, max_y - min_y, max_z - min_z)
-    bpy.ops.object.transform_apply(scale=True)
+
+    # Apply scale directly via mathutils so no viewport context is needed
+    import mathutils
+    sx, sy, sz = max_x - min_x, max_y - min_y, max_z - min_z
+    scale_mat = mathutils.Matrix.Diagonal((sx, sy, sz, 1.0))
+    obj.data.transform(scale_mat)
+    obj.scale = (1.0, 1.0, 1.0)
 
     vg = obj.vertex_groups.new(name=comp_name)
     vg.add([v.index for v in obj.data.vertices], 1.0, 'REPLACE')

@@ -140,6 +140,8 @@ def pre_assign_bake_paths(objects: list, output_dir: str, model_name: str, bake_
         if props is None or not props.is_dayz_object:
             continue
         for sm in props.selection_mats:
+            if sm.no_texture:
+                continue
             sel_name = _selection_base_name(sm)
             if not sel_name:
                 continue
@@ -402,6 +404,9 @@ def run_baker_and_assign(operator, objects: list, model_name: str, p3d_filepath:
             if props is None or not props.is_dayz_object:
                 continue
             for sm in props.selection_mats:
+                # Skip selections with no texture or not marked for baking
+                if sm.no_texture or not sm.bake_texture:
+                    continue
                 sel_name = _selection_base_name(sm)
                 vgroup_name = sm.vgroup_name or sel_name
                 if not sel_name:

@@ -361,7 +361,10 @@ def _sync_selection_mats(obj):
         if name not in existing:
             item = props.selection_mats.add()
             item.vgroup_name = name
-            item.hidden_selection = name  # default: same as vgroup name
+            item.hidden_selection = name
+        elif not existing[name].hidden_selection.strip():
+            # Fill blank hidden_selection on existing entries
+            existing[name].hidden_selection = name
 
     # Remove stale (vertex group was deleted)
     to_remove = [i for i, sm in enumerate(props.selection_mats)
@@ -625,28 +628,25 @@ class DGM_PT_named_selections(bpy.types.Panel):
         for sm in props.selection_mats:
             box = layout.box()
 
-            # Header row: vgroup name on left, Bake toggle on right (if licensed)
+            # Header row: vgroup name | No Texture checkbox | Bake toggle (if licensed)
             header = box.row(align=True)
             header.label(text=sm.vgroup_name, icon='GROUP_VERTEX')
-            if baker_ok:
+            header.prop(sm, "no_texture", text="No Texture", toggle=True)
+            if baker_ok and not sm.no_texture:
                 header.prop(sm, "bake_texture", text="Bake", toggle=True)
 
-            # Selection name — pre-filled from vgroup, editable if user wants a different export name
-            col = box.column(align=True)
-            col.prop(sm, "hidden_selection", text="Selection Name")
-
-            if baker_ok and sm.bake_texture:
-                # Bake mode: show result paths (read-only) after a bake has run
-                if sm.texture:
-                    col.label(text=sm.texture, icon='IMAGE_DATA')
-                    if sm.rv_mat:
-                        col.label(text=sm.rv_mat, icon='NODE_MATERIAL')
+            if not sm.no_texture:
+                col = box.column(align=True)
+                if baker_ok and sm.bake_texture:
+                    if sm.texture:
+                        col.label(text=sm.texture, icon='IMAGE_DATA')
+                        if sm.rv_mat:
+                            col.label(text=sm.rv_mat, icon='NODE_MATERIAL')
+                    else:
+                        col.label(text="Paths assigned after baking", icon='TIME')
                 else:
-                    col.label(text="Paths assigned after baking", icon='TIME')
-            else:
-                # Manual mode: editable PAA and RVMAT fields with plain labels
-                col.prop(sm, "texture", text="Texture (.paa)")
-                col.prop(sm, "rv_mat", text="RVMat (.rvmat)")
+                    col.prop(sm, "texture", text="Texture (.paa)")
+                    col.prop(sm, "rv_mat", text="RVMat (.rvmat)")
 
 
 # ---------------------------------------------------------------------------

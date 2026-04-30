@@ -4,6 +4,18 @@
 
 ---
 
+## [2.0.5] - 2026-04-30
+
+### Added
+- **No Texture** toggle on each named selection — marks a selection as geometry-only or shared-UV with no texture. Hides texture/RVMAT fields, excludes it from baking, and prevents it being stamped with predicted paths on export.
+
+### Fixed
+- Named selection sync now always pre-fills the hidden selection name from the vertex group name, including on existing entries that previously had a blank name.
+- `Add Geometry` no longer crashes with "context is incorrect" when called from the dialog — scale is now applied directly to the mesh data instead of via `bpy.ops.object.transform_apply`.
+- Per-selection baking now correctly respects the `bake_texture` toggle — selections without it ticked are skipped entirely rather than being baked as part of the whole mesh.
+
+---
+
 ## [2.0.4] - 2026-04-29
 
 ### Fixed
