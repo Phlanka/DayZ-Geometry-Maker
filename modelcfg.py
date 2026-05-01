@@ -55,6 +55,25 @@ def _quote(s):
 # Writer
 # ---------------------------------------------------------------------------
 
+def _collect_door_configs(scene):
+    """
+    Return {door_vgroup_name: (closed_angle, open_angle)} for doors that have
+    a vertex group set on the scene. Used to override axis/angle output for
+    matching bones in the model.cfg.
+    """
+    out = {}
+    if scene is None:
+        return out
+    for di in range(1, 9):
+        vg = getattr(scene, 'dgm_door_{}_vgroup'.format(di), "").strip()
+        if not vg:
+            continue
+        closed = getattr(scene, 'dgm_door_{}_closed_angle'.format(di), 0.0)
+        opened = getattr(scene, 'dgm_door_{}_open_angle'.format(di), -1.5708)
+        out[vg] = (closed, opened)
+    return out
+
+
 def write_model_cfg(filepath, objects, model_name=None):
     """
     Write a model.cfg file next to the P3D at filepath.
@@ -65,6 +84,13 @@ def write_model_cfg(filepath, objects, model_name=None):
         model_name = os.path.splitext(os.path.basename(filepath))[0]
 
     cfg_path = os.path.splitext(filepath)[0] + ".cfg"
+
+    try:
+        import bpy
+        scene = bpy.context.scene
+    except Exception:
+        scene = None
+    door_cfgs = _collect_door_configs(scene)
 
     sections = _collect_sections(objects)
     bones = _collect_bones(objects)
@@ -118,18 +144,29 @@ def write_model_cfg(filepath, objects, model_name=None):
     lines.append("\t\tclass Animations")
     lines.append("\t\t{")
 
-    # Emit a template animation entry for each bone so the user can fill it in
+    # Emit a template animation entry for each bone so the user can fill it in.
+    # If the bone matches a configured door (dgm_door_N_vgroup == bone name),
+    # emit the begin/end axis pair and the recorded open/closed angles.
     for bone, _ in bones:
         lines.append("\t\t\tclass {}_rotate".format(bone))
         lines.append("\t\t\t{")
         lines.append("\t\t\t\ttype = rotation;")
         lines.append("\t\t\t\tsource = {};".format(_quote(bone)))
         lines.append("\t\t\t\tselection = {};".format(_quote(bone)))
-        lines.append("\t\t\t\taxis = {};".format(_quote(bone + "_axis")))
-        lines.append("\t\t\t\tminValue = 0;")
-        lines.append("\t\t\t\tmaxValue = 1;")
-        lines.append("\t\t\t\tangle0 = 0;")
-        lines.append("\t\t\t\tangle1 = 3.14159;")
+        if bone in door_cfgs:
+            closed, opened = door_cfgs[bone]
+            lines.append("\t\t\t\taxis = {},{};".format(
+                _quote(bone + "_axis_1"), _quote(bone + "_axis_2")))
+            lines.append("\t\t\t\tminValue = 0;")
+            lines.append("\t\t\t\tmaxValue = 1;")
+            lines.append("\t\t\t\tangle0 = {:.6f};".format(closed))
+            lines.append("\t\t\t\tangle1 = {:.6f};".format(opened))
+        else:
+            lines.append("\t\t\t\taxis = {};".format(_quote(bone + "_axis")))
+            lines.append("\t\t\t\tminValue = 0;")
+            lines.append("\t\t\t\tmaxValue = 1;")
+            lines.append("\t\t\t\tangle0 = 0;")
+            lines.append("\t\t\t\tangle1 = 3.14159;")
         lines.append("\t\t\t};")
 
     lines.append("\t\t};")

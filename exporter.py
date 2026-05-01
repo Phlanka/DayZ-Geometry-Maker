@@ -524,6 +524,29 @@ def _apply_modifiers(obj):
         bpy.ops.object.modifier_apply(modifier=mod.name)
 
 
+def _rename_door_axes_for_export(scene):
+    """
+    Rename Memory LOD axis vgroups from door_N_axis_1/2 to <doorvgroup>_axis_1/2
+    so the names match the door's mesh selection. Idempotent.
+    """
+    from . import geometry
+    mem = geometry.get_memory_object()
+    if not mem:
+        return
+    for di in range(1, 9):
+        door_vg = getattr(scene, 'dgm_door_{}_vgroup'.format(di), "").strip()
+        if not door_vg:
+            continue
+        for suffix in (1, 2):
+            old_name = 'door_{}_axis_{}'.format(di, suffix)
+            new_name = '{}_axis_{}'.format(door_vg, suffix)
+            if old_name == new_name:
+                continue
+            vg = mem.vertex_groups.get(old_name)
+            if vg and not mem.vertex_groups.get(new_name):
+                vg.name = new_name
+
+
 def export_objects_as_p3d(operator, filepath, objects,
                           apply_modifiers=True,
                           merge_same_lod=True,
@@ -536,6 +559,8 @@ def export_objects_as_p3d(operator, filepath, objects,
     if not objects:
         operator.report({'ERROR'}, "No DayZ objects found to export")
         return {'CANCELLED'}
+
+    _rename_door_axes_for_export(bpy.context.scene)
 
     objects = sorted(objects, key=_lod_key)
 

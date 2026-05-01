@@ -4,6 +4,25 @@
 
 ---
 
+## [2.0.6] - 2026-05-01
+
+### Added
+- **Memory LOD — individual Add/Update buttons** — each memory point type (bounding box, inventory camera, center, radius, muzzle, bolt axis, case eject, eye/ADS, trigger, magazine, ladder, lights, damage hide, door axis) now has its own Add/Update button instead of a single "Create Selected Points" checkbox list. Points already present in the Memory LOD show a filled dot icon; missing points show hollow. Clicking Add creates the point; clicking Update removes and recreates it at the current target object's position.
+- **Move memory points in the viewport** — each existing memory point has a cursor-icon Move button. Clicking it selects that vertex group in Edit Mode on the Memory LOD and activates the Move tool so you can reposition it freely. Click the button again or press Tab to return to Object Mode.
+- **Door rotation setup panel** — once door axis points (`door_N_axis_1` / `door_N_axis_2`) exist in the Memory LOD, a Rotation Setup box appears per door. Pick the door's vertex group on the target mesh, click Enter Rotate Mode, and a temporary wireframe preview of the door geometry appears in the viewport rotating around the hinge axis. Click Set Closed and Set Open to record the angles, then Done to confirm. The recorded angles are written directly into the model.cfg on export.
+- **Remove Named Property button** — each entry in the Object Properties Named Properties list now has an X button to delete it individually.
+
+### Changed
+- **Memory LOD panel redesigned** — the flat checkbox list is replaced with grouped sections (Inventory & Bounds, Weapon Points, Building & Structure, Effects & Lighting), each showing per-point status and move controls.
+- **model.cfg door axis format** — door animation entries now emit `axis = "<bone>_axis_1","<bone>_axis_2";` referencing both axis vertex groups, and use the recorded closed/open angles from the door rotation setup instead of hardcoded 0 / 3.14159.
+- **Door axis vgroup names** — on export, Memory LOD axis vertex groups are renamed from the internal `door_N_axis_1/2` names to `<doorvgroup>_axis_1/2` (e.g. `leftdoor_axis_1`, `leftdoor_axis_2`) so they match the door's named selection in Object Builder.
+
+### Removed
+- **"Create Selected Memory Points" operator** — replaced by the individual per-point Add/Update buttons described above.
+- Old boolean scene properties for memory point toggles (`dgm_memory_bbox`, `dgm_memory_invview`, `dgm_memory_bullet`, etc.) — no longer needed.
+
+---
+
 ## [2.0.5] - 2026-04-30
 
 ### Added

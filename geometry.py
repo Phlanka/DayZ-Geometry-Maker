@@ -273,13 +273,8 @@ def create_geometry(mass=100.0):
     bpy.ops.mesh.primitive_cube_add(size=1, location=(cx, cy, cz))
     obj = bpy.context.object
     obj.name = "Geometry_{}".format(comp_name)
-
-    # Apply scale directly via mathutils so no viewport context is needed
-    import mathutils
-    sx, sy, sz = max_x - min_x, max_y - min_y, max_z - min_z
-    scale_mat = mathutils.Matrix.Diagonal((sx, sy, sz, 1.0))
-    obj.data.transform(scale_mat)
-    obj.scale = (1.0, 1.0, 1.0)
+    obj.scale = (max_x - min_x, max_y - min_y, max_z - min_z)
+    bpy.ops.object.transform_apply(scale=True)
 
     vg = obj.vertex_groups.new(name=comp_name)
     vg.add([v.index for v in obj.data.vertices], 1.0, 'REPLACE')
@@ -467,34 +462,115 @@ def create_shadow_volumes():
 # Memory LOD
 # ---------------------------------------------------------------------------
 
-def create_memory_points():
-    """
-    Memory LOD: named selections as single vertices defining lights,
-    entry points, animation control points, inventory view, etc.
+def get_memory_object():
+    """Find the existing Memory LOD object, or return None."""
+    col = bpy.data.collections.get("Memory")
+    if col:
+        for o in col.objects:
+            if o.type == 'MESH' and o.dgm_props.is_dayz_object:
+                return o
+    return None
 
-    DayZ-specific named selections:
-      boundingbox_min / boundingbox_max  — object bounds for inventory
-      invview                            — camera pos for inventory view
-      ce_center                          — center of mass / center point
-      ce_radius                          — bounding sphere radius reference
-      konec hlavne / usti hlavne         — bullet start/end (muzzle)
-      bolt_axis                          — bolt travel axis (2 vertices)
-      nabojnicestart / nabojniceend      — case ejection start/end
-      eye                                — ADS eye position
-      trigger                            — trigger position (weapons)
-      magazine                           — magazine attachment point
-    """
-    original_obj = bpy.context.scene.dgm_target_object
-    if not original_obj:
+
+def memory_point_exists(point_names):
+    """Return True if ALL named vertex groups exist on the Memory object."""
+    mem = get_memory_object()
+    if not mem:
+        return False
+    existing = {vg.name for vg in mem.vertex_groups}
+    if isinstance(point_names, str):
+        return point_names in existing
+    return all(n in existing for n in point_names)
+
+
+def _get_or_create_memory_object():
+    """Return the Memory LOD object, creating it if needed."""
+    mem = get_memory_object()
+    if mem:
+        return mem
+    mesh = bpy.data.meshes.new("Memory")
+    mem = bpy.data.objects.new("Memory", mesh)
+    bpy.context.scene.collection.objects.link(mem)
+    set_dgm_props(mem, LOD_VALUES["Memory"])
+    move_to_collection(mem, "Memory")
+    return mem
+
+
+def _remove_memory_groups(mem_obj, names):
+    """Remove vertex groups (and their verts) from the memory object by name."""
+    ensure_object_mode()
+    groups_to_remove = [vg for vg in mem_obj.vertex_groups if vg.name in names]
+    if not groups_to_remove:
         return
 
-    set_active(original_obj)
+    keep_names = {vg.name for vg in mem_obj.vertex_groups} - set(names)
+    keep_verts = set()
+    remove_verts = set()
 
+    for v in mem_obj.data.vertices:
+        v_groups = {mem_obj.vertex_groups[g.group].name for g in v.groups}
+        if v_groups & keep_names:
+            keep_verts.add(v.index)
+        elif v_groups & set(names):
+            remove_verts.add(v.index)
+
+    for vg in groups_to_remove:
+        mem_obj.vertex_groups.remove(vg)
+
+    if remove_verts:
+        bm = bmesh.new()
+        bm.from_mesh(mem_obj.data)
+        bm.verts.ensure_lookup_table()
+        to_del = [v for v in bm.verts if v.index in remove_verts]
+        bmesh.ops.delete(bm, geom=to_del, context='VERTS')
+        bm.to_mesh(mem_obj.data)
+        bm.free()
+        mem_obj.data.update()
+
+
+def _add_memory_verts(mem_obj, points):
+    """
+    Add vertices and vertex groups to the memory object.
+    points: list of (group_name, co) or (group_name, [co, co, ...]) for multi-vert groups.
+    """
+    ensure_object_mode()
+    base = len(mem_obj.data.vertices)
+
+    all_cos = []
+    group_assignments = []
+
+    for item in points:
+        name, co_data = item
+        if isinstance(co_data[0], (list, tuple)):
+            indices = list(range(base + len(all_cos), base + len(all_cos) + len(co_data)))
+            all_cos.extend(co_data)
+        else:
+            indices = [base + len(all_cos)]
+            all_cos.append(co_data)
+        group_assignments.append((name, indices))
+
+    if not all_cos:
+        return
+
+    mem_obj.data.vertices.add(len(all_cos))
+    for i, co in enumerate(all_cos):
+        mem_obj.data.vertices[base + i].co = co
+    mem_obj.data.update()
+
+    for name, indices in group_assignments:
+        vg = mem_obj.vertex_groups.get(name) or mem_obj.vertex_groups.new(name=name)
+        vg.add(indices, 1.0, 'REPLACE')
+
+
+def _bbox_data():
+    """Return bbox values and derived positions for the target object."""
+    original_obj = bpy.context.scene.dgm_target_object
+    if not original_obj:
+        return None
     min_x, max_x, min_y, max_y, min_z, max_z = get_bbox(original_obj)
     cx = (max_x + min_x) / 2
     cy = (max_y + min_y) / 2
     cz = (max_z + min_z) / 2
-
     corners = [
         (max_x, max_y, max_z), (max_x, max_y, min_z),
         (max_x, min_y, max_z), (max_x, min_y, min_z),
@@ -503,167 +579,168 @@ def create_memory_points():
     ]
     center = mathutils.Vector((cx, cy, cz))
     sphere_r = max((mathutils.Vector(c) - center).length for c in corners)
+    return {
+        'min_x': min_x, 'max_x': max_x,
+        'min_y': min_y, 'max_y': max_y,
+        'min_z': min_z, 'max_z': max_z,
+        'cx': cx, 'cy': cy, 'cz': cz,
+        'sphere_r': sphere_r,
+    }
 
-    # Find existing Memory object to append to
-    existing_memory = None
-    if "Memory" in bpy.data.collections:
-        for o in bpy.data.collections["Memory"].objects:
-            if o.name.startswith("Memory"):
-                existing_memory = o
-                break
 
-    existing_groups = set()
-    if existing_memory:
-        existing_groups = {vg.name for vg in existing_memory.vertex_groups}
-
-    scene = bpy.context.scene
-    vertices = []
-    vgroups = []  # list of (name, int_index_or_list)
-
-    # --- Bounding box points ---
-    if scene.dgm_memory_bbox:
-        if 'boundingbox_max' not in existing_groups:
-            vertices.append((max_x, min_y, max_z))
-            vgroups.append(("boundingbox_max", len(vertices) - 1))
-        if 'boundingbox_min' not in existing_groups:
-            vertices.append((min_x, max_y, min_z))
-            vgroups.append(("boundingbox_min", len(vertices) - 1))
-
-    # --- Inventory camera ---
-    if scene.dgm_memory_invview:
-        if 'invview' not in existing_groups:
-            vertices.append((cx, min_y - sphere_r * 1.75, cz))
-            vgroups.append(("invview", len(vertices) - 1))
-
-    # --- Center of mass ---
-    if scene.dgm_memory_center and 'ce_center' not in existing_groups:
-        vertices.append((cx, cy, cz))
-        vgroups.append(("ce_center", len(vertices) - 1))
-
-    # --- Bounding sphere radius reference ---
-    if scene.dgm_memory_radius and 'ce_radius' not in existing_groups:
-        # Place at center, offset by sphere radius in -X
-        vertices.append((cx - sphere_r, cy, cz))
-        vgroups.append(("ce_radius", len(vertices) - 1))
-
-    # --- Bullet travel (muzzle): konec=breech end, usti=muzzle/barrel end ---
-    if scene.dgm_memory_bullet:
-        if 'konec hlavne' not in existing_groups:
-            vertices.append((-0.214730, -0.001864, 0.113638))
-            vgroups.append(("konec hlavne", len(vertices) - 1))
-        if 'usti hlavne' not in existing_groups:
-            vertices.append((-0.725986, -0.001864, 0.113638))
-            vgroups.append(("usti hlavne", len(vertices) - 1))
-
-    # --- Bolt axis: two verts defining bolt travel direction ---
-    if scene.dgm_memory_bolt and 'bolt_axis' not in existing_groups:
-        si = len(vertices)
-        vertices.extend([
-            (-0.027365, 0.000002, 0.129440),
-            (0.156166,  0.000002, 0.129440),
-        ])
-        vgroups.append(("bolt_axis", [si, si + 1]))
-
-    # --- Bullet casing ejection ---
-    if scene.dgm_memory_eject:
-        if 'nabojnicestart' not in existing_groups:
-            vertices.append((-0.110412, -0.024278, 0.144729))
-            vgroups.append(("nabojnicestart", len(vertices) - 1))
-        if 'nabojniceend' not in existing_groups:
-            vertices.append((-0.110412, -0.068180, 0.145269))
-            vgroups.append(("nabojniceend", len(vertices) - 1))
-
-    # --- ADS eye position ---
-    if scene.dgm_memory_eye and 'eye' not in existing_groups:
-        vertices.append((0.219703, -0.001609, 0.185810))
-        vgroups.append(("eye", len(vertices) - 1))
-
-    # --- Trigger position ---
-    if scene.dgm_memory_trigger and 'trigger' not in existing_groups:
-        vertices.append((0.0, 0.0, 0.05))
-        vgroups.append(("trigger", len(vertices) - 1))
-
-    # --- Magazine attachment point ---
-    if scene.dgm_memory_magazine and 'magazine' not in existing_groups:
-        vertices.append((0.0, 0.0, 0.0))
-        vgroups.append(("magazine", len(vertices) - 1))
-
-    # --- Ladder top/bottom (for building ladders) ---
-    if scene.dgm_memory_ladder:
-        if 'ladder_top' not in existing_groups:
-            vertices.append((cx, cy, max_z))
-            vgroups.append(("ladder_top", len(vertices) - 1))
-        if 'ladder_bottom' not in existing_groups:
-            vertices.append((cx, cy, min_z))
-            vgroups.append(("ladder_bottom", len(vertices) - 1))
-
-    # --- Light positions (light_1 .. light_N) ---
-    if scene.dgm_memory_lights:
-        count = scene.dgm_memory_lights_count
-        for i in range(1, count + 1):
-            lname = "light_{:d}".format(i)
-            if lname not in existing_groups:
-                # Spread lights evenly around the top surface
-                import math
-                angle = (2 * math.pi / count) * (i - 1)
-                r = (max_x - min_x) * 0.35
-                vertices.append((cx + r * math.cos(angle), cy + r * math.sin(angle), max_z))
-                vgroups.append((lname, len(vertices) - 1))
-
-    # --- Damage / destruction ---
-    if scene.dgm_memory_damage:
-        if 'damageHide' not in existing_groups:
-            vertices.append((cx, cy, cz))
-            vgroups.append(("damageHide", len(vertices) - 1))
-
-    # --- Door / action points ---
-    if scene.dgm_memory_doors:
-        count = scene.dgm_memory_doors_count
-        for i in range(1, count + 1):
-            for suffix in ("_axis_begin", "_axis_end", "_open_pos", "_closed_pos"):
-                dname = "door_{:d}{}".format(i, suffix)
-                if dname not in existing_groups:
-                    vertices.append((cx, cy, cz))
-                    vgroups.append((dname, len(vertices) - 1))
-
-    if not vertices:
+def add_memory_bbox():
+    b = _bbox_data()
+    if not b:
         return
+    mem = _get_or_create_memory_object()
+    _remove_memory_groups(mem, ['boundingbox_max', 'boundingbox_min'])
+    _add_memory_verts(mem, [
+        ('boundingbox_max', (b['max_x'], b['min_y'], b['max_z'])),
+        ('boundingbox_min', (b['min_x'], b['max_y'], b['min_z'])),
+    ])
 
-    if existing_memory:
-        ensure_object_mode()
-        base = len(existing_memory.data.vertices)
-        existing_memory.data.vertices.add(len(vertices))
-        for i, co in enumerate(vertices):
-            existing_memory.data.vertices[base + i].co = co
-        for name, idx_data in vgroups:
-            vg = existing_memory.vertex_groups.new(name=name)
-            if isinstance(idx_data, list):
-                for idx in idx_data:
-                    vg.add([base + idx], 1.0, 'REPLACE')
-            else:
-                vg.add([base + idx_data], 1.0, 'REPLACE')
-        existing_memory.data.update()
-    else:
-        mesh = bpy.data.meshes.new("Memory")
-        mem_obj = bpy.data.objects.new("Memory", mesh)
-        mesh.vertices.add(len(vertices))
-        mesh.vertices.foreach_set("co", [c for v in vertices for c in v])
-        mesh.update()
 
-        bpy.context.collection.objects.link(mem_obj)
-        bpy.context.view_layer.objects.active = mem_obj
-        mem_obj.select_set(True)
+def add_memory_invview():
+    b = _bbox_data()
+    if not b:
+        return
+    mem = _get_or_create_memory_object()
+    _remove_memory_groups(mem, ['invview'])
+    _add_memory_verts(mem, [
+        ('invview', (b['cx'], b['min_y'] - b['sphere_r'] * 1.75, b['cz'])),
+    ])
 
-        for name, idx_data in vgroups:
-            vg = mem_obj.vertex_groups.new(name=name)
-            if isinstance(idx_data, list):
-                for idx in idx_data:
-                    vg.add([idx], 1.0, 'REPLACE')
-            else:
-                vg.add([idx_data], 1.0, 'REPLACE')
 
-        set_dgm_props(mem_obj, LOD_VALUES["Memory"])
-        move_to_collection(mem_obj, "Memory")
+def add_memory_center():
+    b = _bbox_data()
+    if not b:
+        return
+    mem = _get_or_create_memory_object()
+    _remove_memory_groups(mem, ['ce_center'])
+    _add_memory_verts(mem, [
+        ('ce_center', (b['cx'], b['cy'], b['cz'])),
+    ])
+
+
+def add_memory_radius():
+    b = _bbox_data()
+    if not b:
+        return
+    mem = _get_or_create_memory_object()
+    _remove_memory_groups(mem, ['ce_radius'])
+    _add_memory_verts(mem, [
+        ('ce_radius', (b['cx'] - b['sphere_r'], b['cy'], b['cz'])),
+    ])
+
+
+def add_memory_bullet():
+    mem = _get_or_create_memory_object()
+    _remove_memory_groups(mem, ['konec hlavne', 'usti hlavne'])
+    _add_memory_verts(mem, [
+        ('konec hlavne', (-0.214730, -0.001864, 0.113638)),
+        ('usti hlavne',  (-0.725986, -0.001864, 0.113638)),
+    ])
+
+
+def add_memory_bolt():
+    mem = _get_or_create_memory_object()
+    _remove_memory_groups(mem, ['bolt_axis'])
+    _add_memory_verts(mem, [
+        ('bolt_axis', [(-0.027365, 0.000002, 0.129440),
+                       ( 0.156166, 0.000002, 0.129440)]),
+    ])
+
+
+def add_memory_eject():
+    mem = _get_or_create_memory_object()
+    _remove_memory_groups(mem, ['nabojnicestart', 'nabojniceend'])
+    _add_memory_verts(mem, [
+        ('nabojnicestart', (-0.110412, -0.024278, 0.144729)),
+        ('nabojniceend',   (-0.110412, -0.068180, 0.145269)),
+    ])
+
+
+def add_memory_eye():
+    mem = _get_or_create_memory_object()
+    _remove_memory_groups(mem, ['eye'])
+    _add_memory_verts(mem, [
+        ('eye', (0.219703, -0.001609, 0.185810)),
+    ])
+
+
+def add_memory_trigger():
+    mem = _get_or_create_memory_object()
+    _remove_memory_groups(mem, ['trigger'])
+    _add_memory_verts(mem, [
+        ('trigger', (0.0, 0.0, 0.05)),
+    ])
+
+
+def add_memory_magazine():
+    mem = _get_or_create_memory_object()
+    _remove_memory_groups(mem, ['magazine'])
+    _add_memory_verts(mem, [
+        ('magazine', (0.0, 0.0, 0.0)),
+    ])
+
+
+def add_memory_ladder():
+    b = _bbox_data()
+    if not b:
+        return
+    mem = _get_or_create_memory_object()
+    _remove_memory_groups(mem, ['ladder_top', 'ladder_bottom'])
+    _add_memory_verts(mem, [
+        ('ladder_top',    (b['cx'], b['cy'], b['max_z'])),
+        ('ladder_bottom', (b['cx'], b['cy'], b['min_z'])),
+    ])
+
+
+def add_memory_lights(count=1):
+    import math
+    b = _bbox_data()
+    if not b:
+        return
+    mem = _get_or_create_memory_object()
+    names = ['light_{}'.format(i) for i in range(1, count + 1)]
+    _remove_memory_groups(mem, names)
+    points = []
+    r = (b['max_x'] - b['min_x']) * 0.35
+    for i, name in enumerate(names):
+        angle = (2 * math.pi / max(count, 1)) * i
+        points.append((name, (
+            b['cx'] + r * math.cos(angle),
+            b['cy'] + r * math.sin(angle),
+            b['max_z'],
+        )))
+    _add_memory_verts(mem, points)
+
+
+def add_memory_damage():
+    b = _bbox_data()
+    if not b:
+        return
+    mem = _get_or_create_memory_object()
+    _remove_memory_groups(mem, ['damageHide'])
+    _add_memory_verts(mem, [
+        ('damageHide', (b['cx'], b['cy'], b['cz'])),
+    ])
+
+
+def add_memory_doors(count=1):
+    b = _bbox_data()
+    if not b:
+        return
+    mem = _get_or_create_memory_object()
+    names = ['door_{}_axis_{}'.format(i, p) for i in range(1, count + 1) for p in (1, 2)]
+    _remove_memory_groups(mem, names)
+    points = []
+    for i in range(1, count + 1):
+        points.extend([
+            ('door_{}_axis_1'.format(i), (b['cx'], b['cy'], b['max_z'])),
+            ('door_{}_axis_2'.format(i), (b['cx'], b['cy'], b['min_z'])),
+        ])
+    _add_memory_verts(mem, points)
 
 
 # ---------------------------------------------------------------------------
