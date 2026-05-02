@@ -68,15 +68,6 @@ If you have the Phlanka Texture Baker addon installed and licensed:
 
 ---
 
-## Support
-
-Maintaining and improving this project takes time.  
-If it's helped you, you can support its development here:
-
-[![Donate](https://img.shields.io/badge/Donate-PayPal-blue.svg)](https://paypal.me/PhlankaGB)
-
----
-
 ## License
 
 This project is licensed under the **GNU General Public License v3.0** with additional terms:
@@ -100,3 +91,7 @@ For bug reports and feature requests, open an issue on GitHub.
 
 - Export pipeline informed by [Arma3ObjectBuilder](https://github.com/MrClock8163/Arma3ObjectBuilder) (GPL-3.0) by MrClock8163
 - Built for the DayZ modding community
+
+## Contributors
+
+- [7ooWORKS](https://github.com/7ooWORKS) — mod export system and config generation

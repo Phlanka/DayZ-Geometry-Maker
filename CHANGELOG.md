@@ -1,37 +1,18 @@
 # Changelog
 
-## [Unreleased]
-
----
-
-## [2.0.6] - 2026-05-01
+## [2.0.5] - 2026-05-02
 
 ### Added
-- **Memory LOD — individual Add/Update buttons** — each memory point type (bounding box, inventory camera, center, radius, muzzle, bolt axis, case eject, eye/ADS, trigger, magazine, ladder, lights, damage hide, door axis) now has its own Add/Update button instead of a single "Create Selected Points" checkbox list. Points already present in the Memory LOD show a filled dot icon; missing points show hollow. Clicking Add creates the point; clicking Update removes and recreates it at the current target object's position.
-- **Move memory points in the viewport** — each existing memory point has a cursor-icon Move button. Clicking it selects that vertex group in Edit Mode on the Memory LOD and activates the Move tool so you can reposition it freely. Click the button again or press Tab to return to Object Mode.
-- **Door rotation setup panel** — once door axis points (`door_N_axis_1` / `door_N_axis_2`) exist in the Memory LOD, a Rotation Setup box appears per door. Pick the door's vertex group on the target mesh, click Enter Rotate Mode, and a temporary wireframe preview of the door geometry appears in the viewport rotating around the hinge axis. Click Set Closed and Set Open to record the angles, then Done to confirm. The recorded angles are written directly into the model.cfg on export.
-- **Remove Named Property button** — each entry in the Object Properties Named Properties list now has an X button to delete it individually.
+- **Mod export system** — Export section now has P3D path picker, Textures folder, and Scripts folder. All config and script files are generated automatically on export
+- **config.cpp generation** — Exports a combined config next to the P3D containing CfgPatches, CfgMods (with correct script paths), and CfgVehicles (Container_Base)
+- **4_World scripts generation** — Entity class, ActionOpen, ActionClose, and moddedActionConstructor scripts generated from templates with class name substitution
+- **model.cfg sections** — Door bone names (leftdoor, rightdoor etc.) now included in `sections[]` alongside texture selections
+- **Add Door Geometry** — New button in the Memory Points door section creates a Geometry LOD convex hull for each configured door vertex group (10kg, named after the door)
+- **Fire Geometry** now includes door geometry objects alongside ComponentXX objects when building from the Geometry collection
+- **Door angle inversion** — model.cfg angle0/angle1 values are negated to match DayZ's sign convention
 
-### Changed
-- **Memory LOD panel redesigned** — the flat checkbox list is replaced with grouped sections (Inventory & Bounds, Weapon Points, Building & Structure, Effects & Lighting), each showing per-point status and move controls.
-- **model.cfg door axis format** — door animation entries now emit `axis = "<bone>_axis_1","<bone>_axis_2";` referencing both axis vertex groups, and use the recorded closed/open angles from the door rotation setup instead of hardcoded 0 / 3.14159.
-- **Door axis vgroup names** — on export, Memory LOD axis vertex groups are renamed from the internal `door_N_axis_1/2` names to `<doorvgroup>_axis_1/2` (e.g. `leftdoor_axis_1`, `leftdoor_axis_2`) so they match the door's named selection in Object Builder.
-
-### Removed
-- **"Create Selected Memory Points" operator** — replaced by the individual per-point Add/Update buttons described above.
-- Old boolean scene properties for memory point toggles (`dgm_memory_bbox`, `dgm_memory_invview`, `dgm_memory_bullet`, etc.) — no longer needed.
-
----
-
-## [2.0.5] - 2026-04-30
-
-### Added
-- **No Texture** toggle on each named selection — marks a selection as geometry-only or shared-UV with no texture. Hides texture/RVMAT fields, excludes it from baking, and prevents it being stamped with predicted paths on export.
-
-### Fixed
-- Named selection sync now always pre-fills the hidden selection name from the vertex group name, including on existing entries that previously had a blank name.
-- `Add Geometry` no longer crashes with "context is incorrect" when called from the dialog — scale is now applied directly to the mesh data instead of via `bpy.ops.object.transform_apply`.
-- Per-selection baking now correctly respects the `bake_texture` toggle — selections without it ticked are skipped entirely rather than being baked as part of the whole mesh.
+### Contributors
+- [7ooWORKS](https://github.com/7ooWORKS) — contributed to the mod export and config generation system
 
 ---
 

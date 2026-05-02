@@ -331,11 +331,11 @@ def create_view_geometry():
 # ---------------------------------------------------------------------------
 
 def _get_geometry_components():
-    """Return all Geometry_ComponentXX objects from the Geometry collection."""
+    """Return all mesh objects from the Geometry collection."""
     col = bpy.data.collections.get("Geometry")
     if not col:
         return []
-    return [o for o in col.objects if o.type == 'MESH' and o.name.startswith("Geometry_Component")]
+    return [o for o in col.objects if o.type == 'MESH']
 
 
 def create_fire_geometry(operator=None, quality=2):
@@ -456,6 +456,89 @@ def create_shadow_volumes():
         assign_default_material(sv_obj)
 
         bpy.ops.object.select_all(action='DESELECT')
+
+
+# ---------------------------------------------------------------------------
+# Door Geometry LOD
+# ---------------------------------------------------------------------------
+
+def create_door_geometry():
+    """
+    Create one Geometry LOD component per configured door, shaped as a convex
+    hull of the door's vertex group. Each component gets the door's vgroup name
+    (e.g. 'leftdoor') instead of a ComponentXX name so DayZ can animate it.
+    Existing door geometry objects are removed and recreated fresh each call.
+    """
+    scene = bpy.context.scene
+    target = scene.dgm_target_object
+    if not target or target.type != 'MESH':
+        return 0
+
+    door_count = getattr(scene, 'dgm_memory_doors_count', 0)
+    created = 0
+
+    for di in range(1, door_count + 1):
+        vgroup_name = getattr(scene, 'dgm_door_{}_vgroup'.format(di), "").strip()
+        if not vgroup_name:
+            continue
+
+        vg = target.vertex_groups.get(vgroup_name)
+        if not vg:
+            continue
+
+        # Remove any existing geometry object for this door
+        existing_name = "Geometry_door_{}".format(vgroup_name)
+        existing = bpy.data.objects.get(existing_name)
+        if existing:
+            bpy.data.objects.remove(existing, do_unlink=True)
+
+        # Collect world-space positions of verts in this group
+        wm = target.matrix_world
+        world_verts = []
+        for v in target.data.vertices:
+            for g in v.groups:
+                if g.group == vg.index:
+                    world_verts.append(wm @ v.co.copy())
+                    break
+
+        if len(world_verts) < 4:
+            continue
+
+        # Build convex hull
+        hull_bm = bmesh.new()
+        for co in world_verts:
+            hull_bm.verts.new(co)
+        hull_bm.verts.ensure_lookup_table()
+        result = bmesh.ops.convex_hull(hull_bm, input=hull_bm.verts)
+        for geom in result.get("geom_interior", []):
+            if isinstance(geom, bmesh.types.BMVert):
+                hull_bm.verts.remove(geom)
+
+        hull_mesh = bpy.data.meshes.new(existing_name)
+        hull_bm.to_mesh(hull_mesh)
+        hull_bm.free()
+
+        obj = bpy.data.objects.new(existing_name, hull_mesh)
+        bpy.context.scene.collection.objects.link(obj)
+
+        # Door geometry uses the door's vgroup name, not ComponentXX
+        door_vg = obj.vertex_groups.new(name=vgroup_name)
+        door_vg.add([v.index for v in obj.data.vertices], 1.0, 'REPLACE')
+
+        mass = 10.0
+        add_fhq_weights(obj, weight=mass / max(len(obj.data.vertices), 1))
+
+        set_dgm_props(obj, LOD_VALUES["Geometry"], mass=mass)
+        clear_named_props(obj)
+        add_named_prop(obj, "autocenter", "0")
+        add_named_prop(obj, "canbeoccluded", "1")
+        add_named_prop(obj, "canocclude", "0")
+
+        assign_default_material(obj)
+        move_to_collection(obj, "Geometry")
+        created += 1
+
+    return created
 
 
 # ---------------------------------------------------------------------------

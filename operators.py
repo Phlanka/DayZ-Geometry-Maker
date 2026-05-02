@@ -94,13 +94,17 @@ class DGM_OT_create_view_geometry(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class DGM_OT_toggle_fire(bpy.types.Operator):
-    bl_idname = "dgm.toggle_fire"
-    bl_label = "Fire Geometry"
-    bl_options = {'REGISTER', 'UNDO'}
+class DGM_OT_toggle_section(bpy.types.Operator):
+    """Generic toggle for any boolean scene property — drives collapsible sections."""
+    bl_idname = "dgm.toggle_section"
+    bl_label = "Toggle Section"
+    bl_options = {'REGISTER'}
+
+    prop: bpy.props.StringProperty()
 
     def execute(self, context):
-        context.scene.dgm_show_fire = not context.scene.dgm_show_fire
+        current = getattr(context.scene, self.prop, False)
+        setattr(context.scene, self.prop, not current)
         return {'FINISHED'}
 
 
@@ -226,16 +230,6 @@ class DGM_OT_create_roadway(bpy.types.Operator):
 # ---------------------------------------------------------------------------
 # Memory operators
 # ---------------------------------------------------------------------------
-
-class DGM_OT_toggle_memory(bpy.types.Operator):
-    bl_idname = "dgm.toggle_memory"
-    bl_label = "Memory Points"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def execute(self, context):
-        context.scene.dgm_show_memory = not context.scene.dgm_show_memory
-        return {'FINISHED'}
-
 
 # ---------------------------------------------------------------------------
 # Memory point — individual add operators
@@ -535,10 +529,61 @@ def _remove_door_preview(door_idx):
         bpy.data.objects.remove(obj, do_unlink=True)
 
 
+def _apply_preview_angle(door_idx, scene, angle):
+    """Rotate the preview mesh to the given angle around the hinge axis from the closed position."""
+    import mathutils
+    preview = bpy.data.objects.get(_door_preview_name(door_idx))
+    if not preview:
+        return
+    orig_flat = scene.get('dgm_door_{}_orig_verts'.format(door_idx))
+    mid_list  = scene.get('dgm_door_{}_axis_mid'.format(door_idx))
+    ax_list   = scene.get('dgm_door_{}_axis_vec'.format(door_idx))
+    if orig_flat is None or mid_list is None or ax_list is None:
+        return
+    mid  = mathutils.Vector(mid_list)
+    axis = mathutils.Vector(ax_list).normalized()
+    orig_verts = [mathutils.Vector(orig_flat[i*3:(i+1)*3]) for i in range(len(orig_flat)//3)]
+    rot_mat = mathutils.Matrix.Rotation(angle, 4, axis)
+    inv_world = preview.matrix_world.inverted()
+    for i, v in enumerate(preview.data.vertices):
+        world_orig = orig_verts[i]
+        rotated = rot_mat @ (world_orig - mid) + mid
+        v.co = inv_world @ rotated
+    preview.data.update()
+
+
+def _door_preview_angle_update(self, context):
+    """Called when any preview angle slider changes — self is the scene."""
+    active_idx = self.dgm_door_pose_active_idx
+    if active_idx < 1:
+        return
+    angle = getattr(self, 'dgm_door_{}_preview_angle'.format(active_idx), 0.0)
+    _apply_preview_angle(active_idx, self, angle)
+
+
+class DGM_OT_door_add_geometry(bpy.types.Operator):
+    bl_idname = "dgm.door_add_geometry"
+    bl_label = "Add Door Geometry"
+    bl_description = (
+        "Create a Geometry LOD component for each configured door, shaped as a "
+        "convex hull of the door vertex group. Existing door geometry is replaced. "
+        "Each component is set to 10kg with the door's vertex group name"
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    def execute(self, context):
+        created = geometry.create_door_geometry()
+        if created == 0:
+            self.report({'WARNING'}, "No door vertex groups configured — set Door Geometry on each door first")
+            return {'CANCELLED'}
+        self.report({'INFO'}, "Created geometry for {} door(s)".format(created))
+        return {'FINISHED'}
+
+
 class DGM_OT_door_set_pose(bpy.types.Operator):
-    """Duplicate the door geometry and enter rotate mode around the hinge axis."""
+    """Create the door preview mesh and show the angle slider."""
     bl_idname = "dgm.door_set_pose"
-    bl_label = "Set Door Pose"
+    bl_label = "Preview Door"
     bl_options = {'REGISTER', 'UNDO'}
 
     door_idx: bpy.props.IntProperty()
@@ -572,9 +617,9 @@ class DGM_OT_door_set_pose(bpy.types.Operator):
 
         _remove_door_preview(self.door_idx)
 
-        src_mesh = target.data
-        bm = bmesh.new()
-        bm.from_mesh(src_mesh)
+        import bmesh as _bmesh
+        bm = _bmesh.new()
+        bm.from_mesh(target.data)
 
         group_verts = set()
         for v in target.data.vertices:
@@ -583,7 +628,7 @@ class DGM_OT_door_set_pose(bpy.types.Operator):
                     group_verts.add(v.index)
 
         bm_verts_to_del = [v for v in bm.verts if v.index not in group_verts]
-        bmesh.ops.delete(bm, geom=bm_verts_to_del, context='VERTS')
+        _bmesh.ops.delete(bm, geom=bm_verts_to_del, context='VERTS')
 
         new_mesh = bpy.data.meshes.new(_door_preview_name(self.door_idx))
         bm.to_mesh(new_mesh)
@@ -593,71 +638,28 @@ class DGM_OT_door_set_pose(bpy.types.Operator):
         preview.matrix_world = target.matrix_world.copy()
         context.collection.objects.link(preview)
 
+        # Store closed-position world verts and axis info for angle application
         world_verts = [target.matrix_world @ v.co for v in target.data.vertices if v.index in group_verts]
         scene['dgm_door_{}_orig_verts'.format(self.door_idx)] = [co for v in world_verts for co in v]
         scene['dgm_door_{}_axis_mid'.format(self.door_idx)] = list(mid)
         scene['dgm_door_{}_axis_vec'.format(self.door_idx)] = list(axis)
-        scene['dgm_door_{}_pose_target'.format(self.door_idx)] = self.pose
 
-        context.scene.cursor.location = mid
-        context.scene.tool_settings.transform_pivot_point = 'CURSOR'
+        # Seed the slider at the existing open angle so the preview starts there
+        existing = getattr(scene, 'dgm_door_{}_open_angle'.format(self.door_idx), 0.0)
+        setattr(scene, 'dgm_door_{}_preview_angle'.format(self.door_idx), existing)
+        _apply_preview_angle(self.door_idx, scene, existing)
 
         if context.mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
-        bpy.ops.object.select_all(action='DESELECT')
-        preview.select_set(True)
-        context.view_layer.objects.active = preview
-        bpy.ops.object.mode_set(mode='EDIT')
-        bpy.ops.mesh.select_all(action='SELECT')
-        try:
-            bpy.ops.wm.tool_set_by_id(name="builtin.rotate", space_type='VIEW_3D')
-        except Exception:
-            pass
 
         scene.dgm_door_pose_active = True
         scene.dgm_door_pose_active_idx = self.door_idx
 
-        self.report({'INFO'}, "Rotate the preview then click Set Closed or Set Open")
         return {'FINISHED'}
 
 
-def _calculate_angle_from_preview(door_idx, scene):
-    """Read preview mesh's current vert positions and return signed rotation angle in radians."""
-    import mathutils
-
-    preview = bpy.data.objects.get(_door_preview_name(door_idx))
-    if not preview:
-        return None, "No preview found"
-
-    orig_flat = scene.get('dgm_door_{}_orig_verts'.format(door_idx))
-    mid_list  = scene.get('dgm_door_{}_axis_mid'.format(door_idx))
-    ax_list   = scene.get('dgm_door_{}_axis_vec'.format(door_idx))
-    if orig_flat is None or mid_list is None or ax_list is None:
-        return None, "Pose data missing"
-
-    mid  = mathutils.Vector(mid_list)
-    axis = mathutils.Vector(ax_list).normalized()
-
-    orig_verts = [mathutils.Vector(orig_flat[i*3:(i+1)*3]) for i in range(len(orig_flat)//3)]
-    curr_verts = [preview.matrix_world @ v.co for v in preview.data.vertices]
-
-    for orig_co, curr_co in zip(orig_verts, curr_verts):
-        v_orig = orig_co - mid
-        v_curr = curr_co - mid
-        v_orig -= v_orig.dot(axis) * axis
-        v_curr -= v_curr.dot(axis) * axis
-        if v_orig.length < 1e-6 or v_curr.length < 1e-6:
-            continue
-        cross = v_orig.cross(v_curr)
-        sign = 1.0 if cross.dot(axis) >= 0 else -1.0
-        angle = sign * math.acos(max(-1.0, min(1.0, v_orig.normalized().dot(v_curr.normalized()))))
-        return angle, None
-
-    return 0.0, None
-
-
 class DGM_OT_door_record_pose(bpy.types.Operator):
-    """Snapshot the current preview rotation as the closed or open angle — stays in rotate mode."""
+    """Copy the current preview slider angle to closed or open."""
     bl_idname = "dgm.door_record_pose"
     bl_label = "Set Pose Angle"
     bl_options = {'REGISTER', 'UNDO'}
@@ -667,31 +669,16 @@ class DGM_OT_door_record_pose(bpy.types.Operator):
 
     def execute(self, context):
         scene = context.scene
-
-        was_edit = (context.mode == 'EDIT_MESH')
-        if was_edit:
-            bpy.ops.object.mode_set(mode='OBJECT')
-
-        angle, err = _calculate_angle_from_preview(self.door_idx, scene)
-        if err:
-            self.report({'ERROR'}, err)
-            return {'CANCELLED'}
-
+        preview_angle = getattr(scene, 'dgm_door_{}_preview_angle'.format(self.door_idx), 0.0)
         prop = 'dgm_door_{}_{}_angle'.format(self.door_idx, self.pose)
-        setattr(scene, prop, angle)
-
-        if was_edit:
-            preview = bpy.data.objects.get(_door_preview_name(self.door_idx))
-            if preview:
-                bpy.ops.object.mode_set(mode='EDIT')
-
-        self.report({'INFO'}, "{} angle recorded: {:.4f} rad ({:.1f}°)".format(
-            self.pose.title(), angle, math.degrees(angle)))
+        setattr(scene, prop, preview_angle)
+        self.report({'INFO'}, "{} angle set: {:.4f} rad ({:.1f}°)".format(
+            self.pose.title(), preview_angle, math.degrees(preview_angle)))
         return {'FINISHED'}
 
 
 class DGM_OT_door_finish_pose(bpy.types.Operator):
-    """Exit rotate mode, remove the preview mesh, restore Tweak tool."""
+    """Remove the preview mesh and close the slider."""
     bl_idname = "dgm.door_finish_pose"
     bl_label = "Done"
     bl_options = {'REGISTER', 'UNDO'}
@@ -699,21 +686,14 @@ class DGM_OT_door_finish_pose(bpy.types.Operator):
     door_idx: bpy.props.IntProperty()
 
     def execute(self, context):
-        if context.mode != 'OBJECT':
-            bpy.ops.object.mode_set(mode='OBJECT')
         _remove_door_preview(self.door_idx)
         context.scene.dgm_door_pose_active = False
         context.scene.dgm_door_pose_active_idx = 0
-        context.scene.tool_settings.transform_pivot_point = 'INDIVIDUAL_ORIGINS'
-        try:
-            bpy.ops.wm.tool_set_by_id(name="builtin.select", space_type='VIEW_3D')
-        except Exception:
-            pass
         return {'FINISHED'}
 
 
 class DGM_OT_door_cancel_pose(bpy.types.Operator):
-    """Cancel door pose setting and remove the preview mesh."""
+    """Remove the preview mesh without saving angles."""
     bl_idname = "dgm.door_cancel_pose"
     bl_label = "Cancel"
     bl_options = {'REGISTER', 'UNDO'}
@@ -721,32 +701,15 @@ class DGM_OT_door_cancel_pose(bpy.types.Operator):
     door_idx: bpy.props.IntProperty()
 
     def execute(self, context):
-        if context.mode != 'OBJECT':
-            bpy.ops.object.mode_set(mode='OBJECT')
         _remove_door_preview(self.door_idx)
         context.scene.dgm_door_pose_active = False
         context.scene.dgm_door_pose_active_idx = 0
-        context.scene.tool_settings.transform_pivot_point = 'INDIVIDUAL_ORIGINS'
-        try:
-            bpy.ops.wm.tool_set_by_id(name="builtin.select", space_type='VIEW_3D')
-        except Exception:
-            pass
         return {'FINISHED'}
 
 
 # ---------------------------------------------------------------------------
 # LOD operators
 # ---------------------------------------------------------------------------
-
-class DGM_OT_toggle_lods(bpy.types.Operator):
-    bl_idname = "dgm.toggle_lods"
-    bl_label = "Resolution LODs"
-    bl_options = {'REGISTER', 'UNDO'}
-
-    def execute(self, context):
-        context.scene.dgm_show_lods = not context.scene.dgm_show_lods
-        return {'FINISHED'}
-
 
 class DGM_OT_create_lods(bpy.types.Operator):
     bl_idname = "dgm.create_lods"
@@ -843,42 +806,65 @@ class DGM_OT_remove_named_prop(bpy.types.Operator):
 # Named Selections panel + operators
 # ---------------------------------------------------------------------------
 
-def _sync_selection_mats(obj):
-    """
-    Keep selection_mats in sync with the object's actual vertex groups.
-    Adds entries for new groups, removes entries for deleted groups.
-    Never wipes existing texture/rvmat data.
-    hidden_selection defaults to the vertex group name — user can override it.
-    """
+def _cleanup_stale_selections(obj):
+    """Remove selection_mat entries for vertex groups that no longer exist on the object."""
     props = obj.dgm_props
-    existing = {sm.vgroup_name: sm for sm in props.selection_mats}
     current_groups = {vg.name for vg in obj.vertex_groups}
-
-    # Add missing — pre-fill hidden_selection with the vgroup name
-    for name in current_groups:
-        if name not in existing:
-            item = props.selection_mats.add()
-            item.vgroup_name = name
-            item.hidden_selection = name  # default: same as vgroup name
-
-    # Remove stale (vertex group was deleted)
     to_remove = [i for i, sm in enumerate(props.selection_mats)
                  if sm.vgroup_name not in current_groups]
     for i in reversed(to_remove):
         props.selection_mats.remove(i)
 
 
-class DGM_OT_sync_selections(bpy.types.Operator):
-    bl_idname = "dgm.sync_selections"
-    bl_label = "Sync from Vertex Groups"
-    bl_description = "Sync the named selection list from this object's vertex groups"
+class DGM_OT_add_selection(bpy.types.Operator):
+    bl_idname = "dgm.add_selection"
+    bl_label = "Add Named Selection"
+    bl_description = "Add the chosen vertex group to the named selections list"
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        obj = context.active_object
-        if obj and obj.type == 'MESH' and hasattr(obj, 'dgm_props'):
-            _sync_selection_mats(obj)
-            self.report({'INFO'}, "Synced {} selections".format(len(obj.vertex_groups)))
+        scene = context.scene
+        target = scene.dgm_target_object
+        if not target:
+            self.report({'ERROR'}, "No target object set")
+            return {'CANCELLED'}
+
+        vgroup_name = scene.dgm_pending_selection.strip()
+        if not vgroup_name:
+            self.report({'WARNING'}, "Select a vertex group first")
+            return {'CANCELLED'}
+
+        if not target.vertex_groups.get(vgroup_name):
+            self.report({'ERROR'}, "Vertex group '{}' not found on target".format(vgroup_name))
+            return {'CANCELLED'}
+
+        for sm in target.dgm_props.selection_mats:
+            if sm.vgroup_name == vgroup_name:
+                self.report({'WARNING'}, "'{}' is already in the list".format(vgroup_name))
+                return {'CANCELLED'}
+
+        item = target.dgm_props.selection_mats.add()
+        item.vgroup_name = vgroup_name
+        item.hidden_selection = vgroup_name
+        scene.dgm_pending_selection = ""
+        return {'FINISHED'}
+
+
+class DGM_OT_remove_selection(bpy.types.Operator):
+    bl_idname = "dgm.remove_selection"
+    bl_label = "Remove Named Selection"
+    bl_description = "Remove this entry from the named selections list"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    index: bpy.props.IntProperty(default=-1)
+
+    def execute(self, context):
+        target = context.scene.dgm_target_object
+        if not target:
+            return {'CANCELLED'}
+        sms = target.dgm_props.selection_mats
+        if 0 <= self.index < len(sms):
+            sms.remove(self.index)
         return {'FINISHED'}
 
 
@@ -893,9 +879,9 @@ class DGM_OT_bake_selections(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
-        obj = context.active_object
+        obj = context.scene.dgm_target_object
         if not obj or obj.type != 'MESH':
-            self.report({'ERROR'}, "Select a mesh object first")
+            self.report({'ERROR'}, "Set a target object first")
             return {'CANCELLED'}
 
         if not baker_bridge.baker_licensed():
@@ -979,172 +965,142 @@ class DGM_OT_bake_selections(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class DGM_PT_named_selections(bpy.types.Panel):
-    bl_label = "Named Selections"
-    bl_idname = "DGM_PT_named_selections"
-    bl_space_type = 'VIEW_3D'
-    bl_region_type = 'UI'
-    bl_category = "DayZ"
-    bl_options = {'DEFAULT_CLOSED'}
+def _draw_named_selections_content(layout, context):
+    """Draw the Named Selections section body — call inside an expanded section box."""
+    scene = context.scene
+    target = scene.dgm_target_object
+    props = target.dgm_props
+    baker_ok = baker_bridge.baker_licensed()
 
-    @classmethod
-    def poll(cls, context):
-        obj = context.active_object
-        return obj is not None and obj.type == 'MESH' and hasattr(obj, 'dgm_props')
+    _cleanup_stale_selections(target)
 
-    def draw(self, context):
-        layout = self.layout
-        obj = context.active_object
-        props = obj.dgm_props
-        baker_ok = baker_bridge.baker_licensed()
+    add_row = layout.row(align=True)
+    add_row.prop_search(scene, "dgm_pending_selection", target, "vertex_groups", text="")
+    add_row.operator("dgm.add_selection", text="", icon='ADD')
 
-        layout.label(text="Vertex groups = Named selections in P3D", icon='GROUP_VERTEX')
-        layout.label(text="{} vertex groups on this object".format(len(obj.vertex_groups)), icon='INFO')
+    if not baker_ok:
+        cta_open = getattr(scene, "dgm_cta_baking_open", False)
+        cta_box = layout.box()
+        cta_row = cta_box.row(align=True)
+        cta_row.prop(scene, "dgm_cta_baking_open", text="",
+                     icon='TRIA_DOWN' if cta_open else 'TRIA_RIGHT', emboss=False)
+        cta_row.label(text="Generate Textures Automatically", icon='RENDER_STILL')
+        if cta_open:
+            col = cta_box.column(align=True)
+            col.label(text="With DayZ Texture Tools you can bake")
+            col.label(text="images from your model directly.")
+            col.separator()
+            col.label(text="You will need the Phlanka Blender addon")
+            col.label(text="with the Texture Baker module (required).")
+            col.separator()
+            row = col.row()
+            row.scale_y = 0.8
+            op = row.operator("wm.url_open", text="Get The Addon", icon='URL')
+            op.url = "https://beta.phlanka.com/"
 
-        layout.operator("dgm.sync_selections", text="Sync from Vertex Groups", icon='FILE_REFRESH')
+    if baker_ok:
+        any_marked = any(sm.bake_texture for sm in props.selection_mats)
+        if any_marked:
+            bake_box = layout.box()
+            bake_box.label(text="Bake Settings", icon='NODE_TEXTURE')
 
-        if not baker_ok:
-            scene = context.scene
-            cta_open = getattr(scene, "dgm_cta_baking_open", False)
-            cta_box = layout.box()
-            cta_row = cta_box.row(align=True)
-            cta_row.prop(scene, "dgm_cta_baking_open", text="",
-                         icon='TRIA_DOWN' if cta_open else 'TRIA_RIGHT', emboss=False)
-            cta_row.label(text="Generate Textures Automatically", icon='RENDER_STILL')
-            if cta_open:
-                col = cta_box.column(align=True)
-                col.label(text="With DayZ Texture Tools you can bake")
-                col.label(text="images from your model directly.")
-                col.separator()
-                col.label(text="You will need the Phlanka Blender addon")
-                col.label(text="with the Texture Baker module (required).")
-                col.separator()
-                row = col.row()
-                row.scale_y = 0.8
-                op = row.operator("wm.url_open", text="Get The Addon", icon='URL')
-                op.url = "https://beta.phlanka.com/"
+            if hasattr(scene, "dayz_bake_resolution"):
+                bake_box.prop(scene, "dayz_bake_resolution", text="Resolution")
+                if str(getattr(scene, "dayz_bake_resolution", "")) == "CUSTOM":
+                    cust = bake_box.row(align=True)
+                    cust.prop(scene, "dayz_bake_resolution_x", text="W")
+                    cust.prop(scene, "dayz_bake_resolution_y", text="H")
 
-        if baker_ok:
-            any_marked = any(sm.bake_texture for sm in props.selection_mats)
+            out_col = bake_box.column(align=True)
+            out_col.label(text="Output Types:")
+            out_grid = out_col.grid_flow(row_major=True, columns=2, even_columns=True)
+            for prop_name, lbl, icon in (
+                ("dayz_bake_co",       "CO",   'IMAGE_DATA'),
+                ("dayz_bake_nohq",     "NOHQ", 'MODIFIER'),
+                ("dayz_bake_smdi",     "SMDI", 'NODE_COMPOSITING'),
+                ("dayz_bake_emissive", "EM",   'LIGHT'),
+                ("dayz_bake_ao",       "AS",   'WORLD'),
+                ("dayz_bake_rvmat",    "RVMAT", 'FILE_TEXT'),
+            ):
+                if hasattr(scene, prop_name):
+                    out_grid.prop(scene, prop_name, text=lbl, toggle=True, icon=icon)
 
-            # Baker settings box — only visible when at least one selection has Bake ticked
-            if any_marked:
-                scene = context.scene
-                box = layout.box()
-                box.label(text="Bake Settings", icon='NODE_TEXTURE')
-
-                # Resolution — uses the baker's own scene props
-                if hasattr(scene, "dayz_bake_resolution"):
-                    box.prop(scene, "dayz_bake_resolution", text="Resolution")
-                    if str(getattr(scene, "dayz_bake_resolution", "")) == "CUSTOM":
-                        cust = box.row(align=True)
-                        cust.prop(scene, "dayz_bake_resolution_x", text="W")
-                        cust.prop(scene, "dayz_bake_resolution_y", text="H")
-
-                # Output types — real prop names from the baker remote script
-                out_col = box.column(align=True)
-                out_col.label(text="Output Types:")
-                out_grid = out_col.grid_flow(row_major=True, columns=2, even_columns=True)
-                for prop_name, label, icon in (
-                    ("dayz_bake_co",       "CO",   'IMAGE_DATA'),
-                    ("dayz_bake_nohq",     "NOHQ", 'MODIFIER'),
-                    ("dayz_bake_smdi",     "SMDI", 'NODE_COMPOSITING'),
-                    ("dayz_bake_emissive", "EM",   'LIGHT'),
-                    ("dayz_bake_ao",       "AS",   'WORLD'),
-                    ("dayz_bake_rvmat",    "RVMAT", 'FILE_TEXT'),
-                ):
-                    if hasattr(scene, prop_name):
-                        out_grid.prop(scene, prop_name, text=label, toggle=True, icon=icon)
-
-                # RVMAT settings — only shown when RVMAT output is enabled
-                if getattr(scene, "dayz_bake_rvmat", False) and hasattr(scene, "dayz_rvmat_preset"):
-                    rv = box.box()
-                    rv.label(text="RVMAT Settings", icon='FILE_TEXT')
-
-                    # Preset row with save/delete
-                    preset_row = rv.row(align=True)
-                    preset_row.prop(scene, "dayz_rvmat_preset", text="Preset")
-                    if hasattr(bpy.types, "DAYZTEXTTOOLS_OT_RvmatPresetDelete"):
-                        selected_id = str(getattr(scene, "dayz_rvmat_preset", "") or "")
-                        del_row = preset_row.row(align=True)
-                        del_row.enabled = selected_id not in {"", "custom"}
-                        del_row.operator("dayztexturetools.rvmat_preset_delete", text="", icon='TRASH')
-                    if hasattr(scene, "dayz_rvmat_preset_name") and hasattr(bpy.types, "DAYZTEXTTOOLS_OT_RvmatPresetSave"):
-                        name_row = rv.row(align=True)
-                        name_row.prop(scene, "dayz_rvmat_preset_name", text="Name")
-                        name_row.operator("dayztexturetools.rvmat_preset_save", text="Save", icon='FILE_TICK')
-
-                    # Surface colors
-                    colors = rv.box()
-                    colors.label(text="Surface Colors", icon='COLOR')
-                    ambient_row = colors.row(align=True)
-                    ambient_row.label(text="Ambient")
-                    ambient_row.prop(scene, "dayz_rvmat_ambient_r", text="R")
-                    ambient_row.prop(scene, "dayz_rvmat_ambient_g", text="G")
-                    ambient_row.prop(scene, "dayz_rvmat_ambient_b", text="B")
-                    diffuse_row = colors.row(align=True)
-                    diffuse_row.label(text="Diffuse")
-                    diffuse_row.prop(scene, "dayz_rvmat_diffuse_r", text="R")
-                    diffuse_row.prop(scene, "dayz_rvmat_diffuse_g", text="G")
-                    diffuse_row.prop(scene, "dayz_rvmat_diffuse_b", text="B")
-                    if getattr(scene, "dayz_bake_emissive", False):
-                        emissive_row = colors.row(align=True)
-                        emissive_row.label(text="Emissive")
-                        emissive_row.prop(scene, "dayz_rvmat_emissive_r", text="R")
-                        emissive_row.prop(scene, "dayz_rvmat_emissive_g", text="G")
-                        emissive_row.prop(scene, "dayz_rvmat_emissive_b", text="B")
-
-                    # Specular with optional color picker
-                    use_picker = getattr(scene, "dayz_rvmat_specular_use_picker", False)
-                    spec_split = rv.split(factor=0.3, align=True)
-                    spec_split.label(text="Specular")
-                    spec_right = spec_split.row(align=True)
-                    if hasattr(scene, "dayz_rvmat_specular_use_picker"):
-                        spec_right.prop(scene, "dayz_rvmat_specular_use_picker", text="", icon='EYEDROPPER', toggle=True)
-                    if use_picker and hasattr(scene, "dayz_rvmat_specular_picker"):
-                        spec_right.prop(scene, "dayz_rvmat_specular_picker", text="")
-                    else:
-                        spec_right.prop(scene, "dayz_rvmat_specular_r", text="R")
-                        spec_right.prop(scene, "dayz_rvmat_specular_g", text="G")
-                        spec_right.prop(scene, "dayz_rvmat_specular_b", text="B")
-                    rv.prop(scene, "dayz_rvmat_specular_power", text="Specular Power")
-
-                    fresnel_row = rv.row(align=True)
-                    fresnel_row.prop(scene, "dayz_rvmat_fresnel_n", text="Fresnel N")
-                    fresnel_row.prop(scene, "dayz_rvmat_fresnel_k", text="Fresnel K")
-                    rv.prop(scene, "dayz_rvmat_env_map", text="Env Map")
-
-        layout.separator()
-
-        if not props.selection_mats:
-            layout.label(text="No selections — click Sync first", icon='ERROR')
-            return
-
-        for sm in props.selection_mats:
-            box = layout.box()
-
-            # Header row: vgroup name on left, Bake toggle on right (if licensed)
-            header = box.row(align=True)
-            header.label(text=sm.vgroup_name, icon='GROUP_VERTEX')
-            if baker_ok:
-                header.prop(sm, "bake_texture", text="Bake", toggle=True)
-
-            # Selection name — pre-filled from vgroup, editable if user wants a different export name
-            col = box.column(align=True)
-            col.prop(sm, "hidden_selection", text="Selection Name")
-
-            if baker_ok and sm.bake_texture:
-                # Bake mode: show result paths (read-only) after a bake has run
-                if sm.texture:
-                    col.label(text=sm.texture, icon='IMAGE_DATA')
-                    if sm.rv_mat:
-                        col.label(text=sm.rv_mat, icon='NODE_MATERIAL')
+            if getattr(scene, "dayz_bake_rvmat", False) and hasattr(scene, "dayz_rvmat_preset"):
+                rv = bake_box.box()
+                rv.label(text="RVMAT Settings", icon='FILE_TEXT')
+                preset_row = rv.row(align=True)
+                preset_row.prop(scene, "dayz_rvmat_preset", text="Preset")
+                if hasattr(bpy.types, "DAYZTEXTTOOLS_OT_RvmatPresetDelete"):
+                    selected_id = str(getattr(scene, "dayz_rvmat_preset", "") or "")
+                    del_row = preset_row.row(align=True)
+                    del_row.enabled = selected_id not in {"", "custom"}
+                    del_row.operator("dayztexturetools.rvmat_preset_delete", text="", icon='TRASH')
+                if hasattr(scene, "dayz_rvmat_preset_name") and hasattr(bpy.types, "DAYZTEXTTOOLS_OT_RvmatPresetSave"):
+                    name_row = rv.row(align=True)
+                    name_row.prop(scene, "dayz_rvmat_preset_name", text="Name")
+                    name_row.operator("dayztexturetools.rvmat_preset_save", text="Save", icon='FILE_TICK')
+                colors = rv.box()
+                colors.label(text="Surface Colors", icon='COLOR')
+                for color_lbl, suffix in (("Ambient", "ambient"), ("Diffuse", "diffuse")):
+                    crow = colors.row(align=True)
+                    crow.label(text=color_lbl)
+                    crow.prop(scene, "dayz_rvmat_{}_r".format(suffix), text="R")
+                    crow.prop(scene, "dayz_rvmat_{}_g".format(suffix), text="G")
+                    crow.prop(scene, "dayz_rvmat_{}_b".format(suffix), text="B")
+                if getattr(scene, "dayz_bake_emissive", False):
+                    erow = colors.row(align=True)
+                    erow.label(text="Emissive")
+                    erow.prop(scene, "dayz_rvmat_emissive_r", text="R")
+                    erow.prop(scene, "dayz_rvmat_emissive_g", text="G")
+                    erow.prop(scene, "dayz_rvmat_emissive_b", text="B")
+                use_picker = getattr(scene, "dayz_rvmat_specular_use_picker", False)
+                spec_split = rv.split(factor=0.3, align=True)
+                spec_split.label(text="Specular")
+                spec_right = spec_split.row(align=True)
+                if hasattr(scene, "dayz_rvmat_specular_use_picker"):
+                    spec_right.prop(scene, "dayz_rvmat_specular_use_picker", text="", icon='EYEDROPPER', toggle=True)
+                if use_picker and hasattr(scene, "dayz_rvmat_specular_picker"):
+                    spec_right.prop(scene, "dayz_rvmat_specular_picker", text="")
                 else:
-                    col.label(text="Paths assigned after baking", icon='TIME')
+                    spec_right.prop(scene, "dayz_rvmat_specular_r", text="R")
+                    spec_right.prop(scene, "dayz_rvmat_specular_g", text="G")
+                    spec_right.prop(scene, "dayz_rvmat_specular_b", text="B")
+                rv.prop(scene, "dayz_rvmat_specular_power", text="Specular Power")
+                fresnel_row = rv.row(align=True)
+                fresnel_row.prop(scene, "dayz_rvmat_fresnel_n", text="Fresnel N")
+                fresnel_row.prop(scene, "dayz_rvmat_fresnel_k", text="Fresnel K")
+                rv.prop(scene, "dayz_rvmat_env_map", text="Env Map")
+
+            bake_box.operator("dgm.bake_selections", text="Bake Marked Selections", icon='RENDER_STILL')
+
+    if not props.selection_mats:
+        layout.label(text="No selections — pick a vertex group and click +", icon='INFO')
+        return
+
+    layout.separator()
+
+    for i, sm in enumerate(props.selection_mats):
+        entry_box = layout.box()
+        header = entry_box.row(align=True)
+        header.label(text=sm.vgroup_name, icon='GROUP_VERTEX')
+        if baker_ok:
+            header.prop(sm, "bake_texture", text="Bake", toggle=True)
+        rem_op = header.operator("dgm.remove_selection", text="", icon='X')
+        rem_op.index = i
+
+        col = entry_box.column(align=True)
+        col.prop(sm, "hidden_selection", text="Selection Name")
+
+        if baker_ok and sm.bake_texture:
+            if sm.texture:
+                col.label(text=sm.texture, icon='IMAGE_DATA')
+                if sm.rv_mat:
+                    col.label(text=sm.rv_mat, icon='NODE_MATERIAL')
             else:
-                # Manual mode: editable PAA and RVMAT fields with plain labels
-                col.prop(sm, "texture", text="Texture (.paa)")
-                col.prop(sm, "rv_mat", text="RVMat (.rvmat)")
+                col.label(text="Paths assigned after baking", icon='TIME')
+        else:
+            col.prop(sm, "texture", text="Texture (.paa)")
+            col.prop(sm, "rv_mat", text="RVMat (.rvmat)")
 
 
 # ---------------------------------------------------------------------------
@@ -1171,7 +1127,6 @@ class DGM_PT_main_panel(bpy.types.Panel):
 
         layout.prop(scene, "dgm_target_object", text="Target Object")
 
-        # Poly count info
         target = scene.dgm_target_object
         if target and target.type == 'MESH':
             layout.label(
@@ -1181,48 +1136,51 @@ class DGM_PT_main_panel(bpy.types.Panel):
                 icon='MESH_DATA'
             )
 
-        layout.separator()
+        def _section_header(prop, label):
+            box = layout.box()
+            row = box.row()
+            is_open = getattr(scene, prop, False)
+            op = row.operator("dgm.toggle_section", text=label,
+                              icon='TRIA_DOWN' if is_open else 'TRIA_RIGHT')
+            op.prop = prop
+            return box, is_open
+
+        # ---- Named Selections ----
+        box, is_open = _section_header("dgm_show_selections", "Named Selections")
+        if is_open:
+            if target:
+                _draw_named_selections_content(box, context)
+            else:
+                box.label(text="Set a Target Object first", icon='ERROR')
 
         # ---- Collision / Functional Geometry ----
-        box = layout.box()
-        box.label(text="Collision & Functional", icon='MESH_CUBE')
-        col = box.column(align=True)
-        col.operator("dgm.create_geometry",                  text="Add Geometry")
-        col.operator("dgm.create_geometry_from_selection",   text="Add Geometry from Selection")
-        col.operator("dgm.create_view_geometry",             text="View Geometry (6e15)")
-
-        # Fire Geometry
-        col.operator("dgm.create_fire_geometry", text="Fire Geometry (7e15)")
-
-        box.operator("dgm.create_shadow_volumes", text="Shadow Volumes (1e4 + 1.001e4)")
-
-        layout.separator()
+        box, is_open = _section_header("dgm_show_collision", "Collision & Functional")
+        if is_open:
+            col = box.column(align=True)
+            col.operator("dgm.create_geometry",                text="Add Geometry")
+            col.operator("dgm.create_geometry_from_selection", text="Add Geometry from Selection")
+            col.operator("dgm.create_view_geometry",           text="View Geometry (6e15)")
+            col.operator("dgm.create_fire_geometry",           text="Fire Geometry (7e15)")
+            box.operator("dgm.create_shadow_volumes",          text="Shadow Volumes (1e4 + 1.001e4)")
 
         # ---- Interior Views ----
-        box = layout.box()
-        box.label(text="Interior View LODs", icon='VIEW_CAMERA')
-        col = box.column(align=True)
-        col.operator("dgm.create_view_pilot",  text="View Pilot (1.1e3)")
-        col.operator("dgm.create_view_gunner", text="View Gunner (1e3)")
-        col.operator("dgm.create_view_cargo",  text="View Cargo (1.2e3)")
-
-        layout.separator()
+        box, is_open = _section_header("dgm_show_interior", "Interior View LODs")
+        if is_open:
+            col = box.column(align=True)
+            col.operator("dgm.create_view_pilot",  text="View Pilot (1.1e3)")
+            col.operator("dgm.create_view_gunner", text="View Gunner (1e3)")
+            col.operator("dgm.create_view_cargo",  text="View Cargo (1.2e3)")
 
         # ---- Terrain / Navigation ----
-        box = layout.box()
-        box.label(text="Terrain & Navigation", icon='CURVE_PATH')
-        col = box.column(align=True)
-        col.operator("dgm.create_land_contact", text="Land Contact (2e15)")
-        col.operator("dgm.create_roadway",      text="Roadway (3e15)")
-
-        layout.separator()
+        box, is_open = _section_header("dgm_show_terrain", "Terrain & Navigation")
+        if is_open:
+            col = box.column(align=True)
+            col.operator("dgm.create_land_contact", text="Land Contact (2e15)")
+            col.operator("dgm.create_roadway",      text="Roadway (3e15)")
 
         # ---- Memory Points ----
-        box = layout.box()
-        icon = 'TRIA_DOWN' if scene.dgm_show_memory else 'TRIA_RIGHT'
-        row = box.row()
-        row.operator("dgm.toggle_memory", text="Memory Points (1e15)", icon=icon)
-        if scene.dgm_show_memory:
+        box, is_open = _section_header("dgm_show_memory", "Memory Points (1e15)")
+        if is_open:
             moving = scene.dgm_moving_memory_point
 
             def _move_btn(row, point_name):
@@ -1339,21 +1297,23 @@ class DGM_PT_main_panel(bpy.types.Panel):
                 open_angle   = getattr(scene, 'dgm_door_{}_open_angle'.format(di), -1.5708)
 
                 if pose_active:
-                    dbox.label(text="Rotate the preview, then set each angle:", icon='INFO')
+                    # Angle slider — drives the preview mesh in real time
+                    dbox.prop(scene, 'dgm_door_{}_preview_angle'.format(di),
+                              text="Preview Angle (rad)")
+                    preview_angle = getattr(scene, 'dgm_door_{}_preview_angle'.format(di), 0.0)
+                    dbox.label(text="{:.4f} rad  ({:.1f}°)".format(
+                        preview_angle, math.degrees(preview_angle)), icon='INFO')
 
                     angle_col = dbox.column(align=True)
-
                     crow = angle_col.row(align=True)
-                    crow.label(text="Closed: {:.4f} rad  ({:.1f}°)".format(
-                        closed_angle, math.degrees(closed_angle)))
-                    rec_c = crow.operator("dgm.door_record_pose", text="Set Closed", icon='CHECKMARK')
+                    crow.label(text="Closed: {:.1f}°".format(math.degrees(closed_angle)))
+                    rec_c = crow.operator("dgm.door_record_pose", text="Set as Closed", icon='CHECKMARK')
                     rec_c.door_idx = di
                     rec_c.pose = 'closed'
 
                     orow = angle_col.row(align=True)
-                    orow.label(text="Open:   {:.4f} rad  ({:.1f}°)".format(
-                        open_angle, math.degrees(open_angle)))
-                    rec_o = orow.operator("dgm.door_record_pose", text="Set Open", icon='CHECKMARK')
+                    orow.label(text="Open:   {:.1f}°".format(math.degrees(open_angle)))
+                    rec_o = orow.operator("dgm.door_record_pose", text="Set as Open", icon='CHECKMARK')
                     rec_o.door_idx = di
                     rec_o.pose = 'open'
 
@@ -1382,6 +1342,16 @@ class DGM_PT_main_panel(bpy.types.Panel):
                     if not vgroup_set:
                         dbox.label(text="Select Door Geometry above first", icon='ERROR')
 
+
+            # Add Door Geometry button — shown if any door has a vgroup set
+            any_door_vgroup = any(
+                bool(getattr(scene, 'dgm_door_{}_vgroup'.format(di), "").strip())
+                for di in range(1, door_count + 1)
+            )
+            if any_door_vgroup:
+                sub.separator()
+                sub.operator("dgm.door_add_geometry", text="Add Door Geometry", icon='MESH_DATA')
+
             sub = box.box()
             sub.label(text="Effects & Lighting", icon='LIGHT')
 
@@ -1398,19 +1368,13 @@ class DGM_PT_main_panel(bpy.types.Panel):
                 info.label(text="Moving: {}".format(moving), icon='ORIENTATION_CURSOR')
                 info.label(text="Tab or click Move again to finish", icon='INFO')
 
-        layout.separator()
-
         # ---- Resolution LODs ----
-        box = layout.box()
-        icon = 'TRIA_DOWN' if scene.dgm_show_lods else 'TRIA_RIGHT'
-        row = box.row()
-        row.operator("dgm.toggle_lods", text="Resolution LODs", icon=icon)
-        if scene.dgm_show_lods:
+        box, is_open = _section_header("dgm_show_lods", "Resolution LODs")
+        if is_open:
             sub = box.box()
             sub.label(text="LOD index shown in Object Builder as e.g. 1.000, 2.000", icon='INFO')
             sub.label(text="Halve polys each step. ~500 polys min at highest index.")
-
-            for lod_num, label in [
+            for lod_num, lod_label in [
                 (1, "LOD 1.000  (highest detail)"),
                 (2, "LOD 2.000"),
                 (3, "LOD 3.000"),
@@ -1418,20 +1382,41 @@ class DGM_PT_main_panel(bpy.types.Panel):
                 (5, "LOD 5.000"),
                 (6, "LOD 6.000  (~500 polys, fewest sections)"),
             ]:
-                row = sub.row(align=True)
-                row.prop(scene, "dgm_lod{}".format(lod_num), text="")
-                row.label(text=label)
-
+                lod_row = sub.row(align=True)
+                lod_row.prop(scene, "dgm_lod{}".format(lod_num), text="")
+                lod_row.label(text=lod_label)
             sub.separator()
             sub.operator("dgm.create_lods", text="Create Selected LODs", icon='MESH_DATA')
 
-        layout.separator()
-
         # ---- Export ----
-        box = layout.box()
-        box.label(text="Export", icon='EXPORT')
-        box.operator("dgm.export_p3d", text="Export P3D (.p3d)", icon='EXPORT')
-        box.operator("dgm.check_update", text="Check for Updates", icon='URL')
+        box, is_open = _section_header("dgm_show_export", "Export")
+        if is_open:
+            col = box.column(align=True)
+
+            # P3D path row — text field showing current path + folder button to pick
+            p3d_row = col.row(align=True)
+            p3d_row.prop(scene, "dgm_p3d_path", text="P3D")
+            p3d_row.operator("dgm.pick_p3d_path", text="", icon='FILE_FOLDER')
+
+            # Textures path — only when at least one selection is marked for baking
+            has_bake = (target and hasattr(target, 'dgm_props') and
+                        any(sm.bake_texture for sm in target.dgm_props.selection_mats))
+            if has_bake:
+                col.prop(scene, "dgm_textures_path", text="Textures")
+
+            # Scripts path — only when door axis points exist in Memory LOD
+            has_doors = (geometry.memory_point_exists('door_1_axis_1') or
+                         geometry.memory_point_exists('door_1_axis_2'))
+            if has_doors:
+                col.prop(scene, "dgm_scripts_path", text="Scripts")
+                col.separator()
+                col.label(text="Script Templates:")
+                col.prop(scene, "dgm_export_container_base", text="Container Base")
+
+            col.separator()
+            col.operator("dgm.export_p3d", text="Export", icon='EXPORT')
+            box.separator()
+            box.operator("dgm.check_update", text="Check for Updates", icon='URL')
 
 
 # ---------------------------------------------------------------------------
@@ -1445,10 +1430,19 @@ def register_scene_props():
         type=bpy.types.Object, name="Target Object"
     )
 
-    # UI toggle state
-    S.dgm_show_fire        = bpy.props.BoolProperty(default=False)
+    # Pending vertex group selection for the Named Selections add-row
+    S.dgm_pending_selection = bpy.props.StringProperty(
+        name="Vertex Group", default=""
+    )
+
+    # Collapsible section toggles — all closed by default
+    S.dgm_show_selections  = bpy.props.BoolProperty(default=False)
+    S.dgm_show_collision   = bpy.props.BoolProperty(default=False)
+    S.dgm_show_interior    = bpy.props.BoolProperty(default=False)
+    S.dgm_show_terrain     = bpy.props.BoolProperty(default=False)
     S.dgm_show_memory      = bpy.props.BoolProperty(default=False)
     S.dgm_show_lods        = bpy.props.BoolProperty(default=False)
+    S.dgm_show_export      = bpy.props.BoolProperty(default=False)
     S.dgm_cta_baking_open  = bpy.props.BoolProperty(default=False)
 
     # Fire Geometry quality
@@ -1477,11 +1471,29 @@ def register_scene_props():
                 bpy.props.FloatProperty(name="Closed Angle (rad)", default=0.0,
                                         soft_min=-6.2832, soft_max=6.2832))
         setattr(S, 'dgm_door_{}_open_angle'.format(_di),
-                bpy.props.FloatProperty(name="Open Angle (rad)", default=-1.5708,
+                bpy.props.FloatProperty(name="Open Angle (rad)", default=0.0,
                                         soft_min=-6.2832, soft_max=6.2832))
+        setattr(S, 'dgm_door_{}_preview_angle'.format(_di),
+                bpy.props.FloatProperty(name="Preview Angle (rad)", default=0.0,
+                                        soft_min=-6.2832, soft_max=6.2832,
+                                        update=_door_preview_angle_update))
         setattr(S, 'dgm_door_{}_anim_period'.format(_di),
                 bpy.props.FloatProperty(name="Anim Period (s)", default=0.15,
                                         min=0.01, max=10.0))
+
+    # Export paths
+    S.dgm_p3d_path = bpy.props.StringProperty(
+        name="P3D", subtype='NONE', default=""
+    )
+    S.dgm_textures_path = bpy.props.StringProperty(
+        name="Textures", subtype='DIR_PATH', default=""
+    )
+    S.dgm_scripts_path = bpy.props.StringProperty(
+        name="Scripts", subtype='DIR_PATH', default=""
+    )
+    S.dgm_export_container_base = bpy.props.BoolProperty(
+        name="Container Base", default=True
+    )
 
     # Resolution LOD toggles + view distances (real game meters per wiki guidance)
     for i in range(1, 7):
@@ -1499,17 +1511,21 @@ def unregister_scene_props():
     S = bpy.types.Scene
     props = [
         "dgm_target_object",
-        "dgm_show_fire", "dgm_show_memory", "dgm_show_lods", "dgm_cta_baking_open",
+        "dgm_pending_selection",
+        "dgm_show_selections", "dgm_show_collision", "dgm_show_interior", "dgm_show_terrain",
+        "dgm_show_memory", "dgm_show_lods", "dgm_show_export", "dgm_cta_baking_open",
         "dgm_fire_quality",
         "dgm_memory_doors_count", "dgm_memory_lights_count",
         "dgm_moving_memory_point",
         "dgm_door_pose_active", "dgm_door_pose_active_idx",
+        "dgm_p3d_path", "dgm_textures_path", "dgm_scripts_path", "dgm_export_container_base",
     ]
     for _di in range(1, 9):
         props += [
             'dgm_door_{}_vgroup'.format(_di),
             'dgm_door_{}_closed_angle'.format(_di),
             'dgm_door_{}_open_angle'.format(_di),
+            'dgm_door_{}_preview_angle'.format(_di),
             'dgm_door_{}_anim_period'.format(_di),
         ]
     for i in range(1, 7):
@@ -1527,7 +1543,7 @@ operator_classes = (
     DGM_OT_create_geometry,
     DGM_OT_create_geometry_from_selection,
     DGM_OT_create_view_geometry,
-    DGM_OT_toggle_fire,
+    DGM_OT_toggle_section,
     DGM_OT_create_fire_geometry,
     DGM_OT_create_shadow_volumes,
     DGM_OT_create_view_pilot,
@@ -1535,7 +1551,6 @@ operator_classes = (
     DGM_OT_create_view_cargo,
     DGM_OT_create_land_contact,
     DGM_OT_create_roadway,
-    DGM_OT_toggle_memory,
     DGM_OT_memory_add_bbox,
     DGM_OT_memory_add_invview,
     DGM_OT_memory_add_center,
@@ -1551,17 +1566,17 @@ operator_classes = (
     DGM_OT_memory_add_damage,
     DGM_OT_memory_add_doors,
     DGM_OT_memory_move_point,
+    DGM_OT_door_add_geometry,
     DGM_OT_door_set_pose,
     DGM_OT_door_record_pose,
     DGM_OT_door_finish_pose,
     DGM_OT_door_cancel_pose,
-    DGM_OT_toggle_lods,
     DGM_OT_create_lods,
     DGM_OT_add_named_prop,
     DGM_OT_remove_named_prop,
-    DGM_OT_sync_selections,
+    DGM_OT_add_selection,
+    DGM_OT_remove_selection,
     DGM_OT_bake_selections,
-    DGM_PT_named_selections,
     DGM_PT_object_props,
     DGM_PT_main_panel,
 )

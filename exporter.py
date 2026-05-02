@@ -67,49 +67,51 @@ def _convert_weight(w):
     return 0 if v == 255 else v
 
 
-def _build_face_mat_cache(obj):
+def _build_face_mat_cache(obj, mat_source=None):
     """
-    Build a per-face (texture, rvmat) lookup from selection_mats.
-    Faces are assigned to a selection by majority vertex-group membership.
-    Falls back to the Blender material slot if no selection_mats configured.
+    Build a per-face (rvmat, texture) lookup from selection_mats.
+    Two-pass stamp: non-bake selections with a manual texture go first,
+    bake selections go last and always overwrite — so baked textures win
+    on any face shared between a blank/animation selection and a bake one.
+    mat_source: object whose selection_mats to read (defaults to obj).
+                Pass the target object so all LODs use the same material config.
     Returns a dict {face_index: (rvmat, texture)} or None to use slot fallback.
     """
-    props = obj.dgm_props
+    src = mat_source if mat_source is not None else obj
+    props = src.dgm_props
     if not props.selection_mats:
         return None
 
-    # Map vgroup name -> (texture, rvmat)
-    sel_map = {}
-    for sm in props.selection_mats:
-        if sm.vgroup_name:
-            sel_map[sm.vgroup_name] = (_strip_drive(sm.rv_mat), _strip_drive(sm.texture))
+    # Precompute vertex -> [face indices]
+    vert_to_faces = {}
+    for face in obj.data.polygons:
+        for vi in face.vertices:
+            vert_to_faces.setdefault(vi, []).append(face.index)
 
-    if not sel_map:
-        return None
+    cache = {}
 
-    # Map vertex index -> list of vgroup names that have selection_mats
-    vert_to_groups = {}
-    for vg in obj.vertex_groups:
-        if vg.name not in sel_map:
-            continue
+    def _stamp(sm):
+        vg = obj.vertex_groups.get(sm.vgroup_name)
+        if not vg:
+            return
+        entry = (_strip_drive(sm.rv_mat), _strip_drive(sm.texture))
         for v in obj.data.vertices:
             for g in v.groups:
                 if g.group == vg.index and g.weight > 0:
-                    vert_to_groups.setdefault(v.index, []).append(vg.name)
+                    for fi in vert_to_faces.get(v.index, []):
+                        cache[fi] = entry
 
-    # Assign each face to the selection with the most vertices in it
-    cache = {}
-    for face in obj.data.polygons:
-        votes = {}
-        for vi in face.vertices:
-            for gname in vert_to_groups.get(vi, []):
-                votes[gname] = votes.get(gname, 0) + 1
-        if votes:
-            winner = max(votes, key=votes.get)
-            cache[face.index] = sel_map[winner]
-        else:
-            cache[face.index] = ("", "")
-    return cache
+    # Pass 1: manual-texture selections (lower priority)
+    for sm in props.selection_mats:
+        if not sm.bake_texture and sm.texture.strip():
+            _stamp(sm)
+
+    # Pass 2: bake selections (highest priority — always overwrite)
+    for sm in props.selection_mats:
+        if sm.bake_texture:
+            _stamp(sm)
+
+    return cache if cache else None
 
 
 def _get_material_info(face, obj, face_mat_cache=None):
@@ -419,7 +421,7 @@ def _prepare_normals(obj):
     bpy.ops.object.modifier_apply(modifier="_dgm_weighted_normal")
 
 
-def _export_lod(f, obj, idx):
+def _export_lod(f, obj, idx, mat_source=None):
     _triangulate_ngons(obj)
     _prepare_normals(obj)
     _optimize_export_lod(obj)
@@ -441,7 +443,7 @@ def _export_lod(f, obj, idx):
     _write_ulong(f, len(mesh.polygons))
     _write_ulong(f, 0)
 
-    face_mat_cache = _build_face_mat_cache(obj)
+    face_mat_cache = _build_face_mat_cache(obj, mat_source=mat_source)
 
     _write_vertices(f, mesh)
     _write_normals(f, normals_list)
@@ -524,27 +526,37 @@ def _apply_modifiers(obj):
         bpy.ops.object.modifier_apply(modifier=mod.name)
 
 
-def _rename_door_axes_for_export(scene):
+def _merge_door_axes_on_duplicate(scene, dup):
     """
-    Rename Memory LOD axis vgroups from door_N_axis_1/2 to <doorvgroup>_axis_1/2
-    so the names match the door's mesh selection. Idempotent.
+    On the export duplicate of the Memory LOD, merge each door's axis_1/axis_2
+    vertex groups into a single <doorvgroup>_axis group, then remove the
+    individual axis_1/axis_2 groups from the duplicate only.
+    The original scene objects are never touched.
     """
-    from . import geometry
-    mem = geometry.get_memory_object()
-    if not mem:
-        return
     for di in range(1, 9):
         door_vg = getattr(scene, 'dgm_door_{}_vgroup'.format(di), "").strip()
         if not door_vg:
             continue
-        for suffix in (1, 2):
-            old_name = 'door_{}_axis_{}'.format(di, suffix)
-            new_name = '{}_axis_{}'.format(door_vg, suffix)
-            if old_name == new_name:
-                continue
-            vg = mem.vertex_groups.get(old_name)
-            if vg and not mem.vertex_groups.get(new_name):
-                vg.name = new_name
+        vg1 = dup.vertex_groups.get('door_{}_axis_1'.format(di))
+        vg2 = dup.vertex_groups.get('door_{}_axis_2'.format(di))
+        if not vg1 or not vg2:
+            continue
+
+        indices = set()
+        for v in dup.data.vertices:
+            for g in v.groups:
+                if g.group in (vg1.index, vg2.index):
+                    indices.add(v.index)
+
+        if not indices:
+            continue
+
+        merged_name = '{}_axis'.format(door_vg)
+        merged_vg = dup.vertex_groups.get(merged_name) or dup.vertex_groups.new(name=merged_name)
+        merged_vg.add(list(indices), 1.0, 'REPLACE')
+
+        for vg in (vg1, vg2):
+            dup.vertex_groups.remove(vg)
 
 
 def export_objects_as_p3d(operator, filepath, objects,
@@ -560,7 +572,10 @@ def export_objects_as_p3d(operator, filepath, objects,
         operator.report({'ERROR'}, "No DayZ objects found to export")
         return {'CANCELLED'}
 
-    _rename_door_axes_for_export(bpy.context.scene)
+    # Use the target object as the authoritative source of material/selection settings.
+    # All LODs inherit material assignments from it so stale selection_mats on
+    # duplicated/auto-synced LOD objects never bleed wrong texture paths into the P3D.
+    mat_source = bpy.context.scene.dgm_target_object
 
     objects = sorted(objects, key=_lod_key)
 
@@ -599,6 +614,11 @@ def export_objects_as_p3d(operator, filepath, objects,
                 # Join all objects sharing this LOD key into one mesh for export
                 tmp = _join_group_for_export(group, tmp_col)
 
+                # Merge door axis pairs into combined named selections on the
+                # export duplicate only — scene objects are never modified.
+                if obj.dgm_props.lod == "1.000e+15":
+                    _merge_door_axes_on_duplicate(bpy.context.scene, tmp)
+
                 if apply_modifiers:
                     _apply_modifiers(tmp)
 
@@ -610,7 +630,7 @@ def export_objects_as_p3d(operator, filepath, objects,
                 if renumber_components and obj.dgm_props.lod in GEOMETRY_LODS:
                     _renumber_components(tmp)
 
-                _export_lod(f, tmp, idx)
+                _export_lod(f, tmp, idx, mat_source=mat_source)
                 wm.progress_update(idx * 5 + 4)
 
                 bpy.ops.object.select_all(action='DESELECT')
@@ -639,175 +659,269 @@ def export_objects_as_p3d(operator, filepath, objects,
 
 
 # ---------------------------------------------------------------------------
-# Export Operator
+# Script / config.cpp template export
 # ---------------------------------------------------------------------------
 
-class DGM_OT_export_p3d(bpy.types.Operator, bpy_extras.io_utils.ExportHelper):
-    bl_idname = "dgm.export_p3d"
-    bl_label = "Export DayZ P3D"
-    bl_description = "Export DayZ/Arma objects to P3D MLOD format"
-    bl_options = {'PRESET'}
+def _build_animsources(scene):
+    """Return AnimationSources config block string from door panel settings."""
+    lines = []
+    door_count = getattr(scene, "dgm_memory_doors_count", 0)
+    for di in range(1, door_count + 1):
+        vg = getattr(scene, "dgm_door_{}_vgroup".format(di), "").strip()
+        period = getattr(scene, "dgm_door_{}_anim_period".format(di), 0.15)
+        if vg:
+            lines.append(
+                "\t\tclass " + vg + "\n"
+                "\t\t{\n"
+                "\t\t\tsource=\"user\";\n"
+                "\t\t\tinitPhase=0;\n"
+                "\t\t\tanimPeriod=" + "{:.2f}".format(period) + ";\n"
+                "\t\t};"
+            )
+    if not lines:
+        return ""
+    return "\t\tclass AnimationSources\n\t\t{\n" + "\n".join(lines) + "\n\t\t};\n"
 
-    filename_ext = ".p3d"
+
+def _build_animphases(scene):
+    """Return SetAnimationPhase lines for UpdateVisualState in scripts."""
+    lines = []
+    door_count = getattr(scene, "dgm_memory_doors_count", 0)
+    for di in range(1, door_count + 1):
+        vg = getattr(scene, "dgm_door_{}_vgroup".format(di), "").strip()
+        if vg:
+            lines.append('SetAnimationPhase("' + vg + '", phase);')
+    if not lines:
+        return "// no door animations configured"
+    return ("\n\t\t").join(lines)
+
+
+def _build_cfgmods(class_name, scripts_root):
+    """Build the CfgMods block using the actual scripts folder path, or return empty string."""
+    if not scripts_root:
+        return ""
+    # scripts_root is e.g. P:\MyMod\scripts — parent folder name is the mod dir name
+    mod_folder = os.path.basename(os.path.dirname(os.path.abspath(scripts_root)))
+    scripts_rel = mod_folder + "/scripts"
+    return (
+        "class CfgMods\n"
+        "{{\n"
+        "\tclass {cn}\n"
+        "\t{{\n"
+        "\t\tdir = \"{cn}\";\n"
+        "\t\tpicture = \"\";\n"
+        "\t\taction = \"\";\n"
+        "\t\thideName = 1;\n"
+        "\t\thidePicture = 1;\n"
+        "\t\tname = \"{cn}\";\n"
+        "\t\tcredits = \"Phlanka\";\n"
+        "\t\tauthor = \"\";\n"
+        "\t\tauthorID = \"0\";\n"
+        "\t\tversion = \"1.0\";\n"
+        "\t\ttype = \"mod\";\n"
+        "\t\tdependencies[] = {{\"Game\", \"World\", \"Mission\"}};\n"
+        "\t\tclass defs\n"
+        "\t\t{{\n"
+        "\t\t\tclass gameScriptModule\n"
+        "\t\t\t{{\n"
+        "\t\t\t\tvalue = \"\";\n"
+        "\t\t\t\tfiles[] = {{\"{sp}/3_Game\"}};\n"
+        "\t\t\t}};\n"
+        "\t\t\tclass worldScriptModule\n"
+        "\t\t\t{{\n"
+        "\t\t\t\tvalue = \"\";\n"
+        "\t\t\t\tfiles[] = {{\"{sp}/4_World\"}};\n"
+        "\t\t\t}};\n"
+        "\t\t\tclass missionScriptModule\n"
+        "\t\t\t{{\n"
+        "\t\t\t\tvalue = \"\";\n"
+        "\t\t\t\tfiles[] = {{\"{sp}/5_Mission\"}};\n"
+        "\t\t\t}};\n"
+        "\t\t}};\n"
+        "\t}};\n"
+        "}};\n"
+    ).format(cn=class_name, sp=scripts_rel)
+
+
+def _export_mod_files(p3d_path, class_name, scene, scripts_root, export_container_base):
+    """Write config.cpp and scripts next to the p3d."""
+    addon_dir = os.path.dirname(__file__)
+    template_base = os.path.join(addon_dir, "templates", "container_base")
+
+    model_dir = os.path.dirname(p3d_path)
+
+    cfgmods = _build_cfgmods(class_name, scripts_root) if (export_container_base and scripts_root) else ""
+
+    # Model path: absolute path stripped of drive, backslashes, no leading slash
+    model_path = os.path.abspath(p3d_path)
+    model_path = os.path.splitdrive(model_path)[1].lstrip("\\/")
+
+    replacements = {
+        "CLASSNAME": class_name,
+        "MODELPATH": model_path,
+        "CFGMODS\n": cfgmods,
+        "ANIMSOURCES": _build_animsources(scene),
+        "ANIMPHASES": _build_animphases(scene),
+    }
+
+    def _write_template(src_path, dst_path):
+        with open(src_path, "r", encoding="utf-8") as f:
+            content = f.read()
+        for placeholder, value in replacements.items():
+            content = content.replace(placeholder, value)
+        os.makedirs(os.path.dirname(dst_path), exist_ok=True)
+        with open(dst_path, "w", encoding="utf-8") as f:
+            f.write(content)
+
+    # config.cpp next to the p3d — contains CfgPatches + CfgMods + CfgVehicles
+    _write_template(
+        os.path.join(template_base, "model", "config.cpp"),
+        os.path.join(model_dir, "config.cpp"),
+    )
+
+    # 4_World scripts — output into scripts_root/4_World/
+    if export_container_base and scripts_root:
+        scripts_template = os.path.join(template_base, "4_World")
+        scripts_out = os.path.join(scripts_root, "4_World")
+        for dirpath, dirnames, filenames in os.walk(scripts_template):
+            for filename in filenames:
+                src_path = os.path.join(dirpath, filename)
+                rel = os.path.relpath(src_path, scripts_template)
+                rel = rel.replace("CLASSNAME", class_name)
+                _write_template(src_path, os.path.join(scripts_out, rel))
+
+
+
+
+
+
+# ---------------------------------------------------------------------------
+# P3D path picker (file browser only — saves path to scene, does not export)
+# ---------------------------------------------------------------------------
+
+class DGM_OT_pick_p3d_path(bpy.types.Operator):
+    bl_idname = "dgm.pick_p3d_path"
+    bl_label = "Set P3D Save Path"
+    bl_description = "Choose where to save the P3D file"
+
+    filepath: bpy.props.StringProperty(subtype='FILE_PATH')
     filter_glob: bpy.props.StringProperty(default="*.p3d", options={'HIDDEN'})
 
-    selection_only: bpy.props.BoolProperty(
-        name="Selection Only",
-        description="Export selected objects only",
-        default=False,
-    )
-    apply_modifiers: bpy.props.BoolProperty(
-        name="Apply Modifiers",
-        description="Apply modifiers before export",
-        default=True,
-    )
-    merge_same_lod: bpy.props.BoolProperty(
-        name="Merge Same LODs",
-        description="Merge objects with the same LOD value",
-        default=True,
-    )
-    renumber_components: bpy.props.BoolProperty(
-        name="Renumber Components",
-        description="Renumber Component vertex groups to be contiguous in Geometry LODs",
-        default=True,
-    )
-    apply_transforms: bpy.props.BoolProperty(
-        name="Apply Transforms",
-        description="Apply location, rotation, and scale before export",
-        default=True,
-    )
-    write_model_cfg_file: bpy.props.BoolProperty(
-        name="Write model.cfg",
-        description="Generate a model.cfg alongside the P3D with sections and animation stubs",
-        default=True,
-    )
-    bake_textures: bpy.props.BoolProperty(
-        name="Bake Textures (DayZ Texture Tools)",
-        description=(
-            "Run the DayZ Texture Baker before export, then auto-assign the baked CO texture "
-            "and RVMAT to all LODs. Requires phlanka_library_beta with an active license"
-        ),
-        default=False,
-    )
     def invoke(self, context, event):
-        if not baker_bridge.baker_licensed():
-            self.bake_textures = False
-        return super().invoke(context, event)
+        scene = context.scene
+        existing = getattr(scene, "dgm_p3d_path", "").strip()
+        if existing:
+            self.filepath = bpy.path.abspath(existing)
+        else:
+            blend = bpy.path.basename(bpy.data.filepath)
+            default_name = os.path.splitext(blend)[0] if blend else "yourmodel"
+            self.filepath = default_name + ".p3d"
+        context.window_manager.fileselect_add(self)
+        return {'RUNNING_MODAL'}
 
     def execute(self, context):
-        # Ensure there is an active object — required by mode_set and other ops.
-        target = getattr(context.scene, "dgm_target_object", None)
+        context.scene.dgm_p3d_path = self.filepath
+        return {'FINISHED'}
+
+
+# ---------------------------------------------------------------------------
+# Export Operator — reads paths from scene, no dialog
+# ---------------------------------------------------------------------------
+
+class DGM_OT_export_p3d(bpy.types.Operator):
+    bl_idname = "dgm.export_p3d"
+    bl_label = "Export DayZ Mod"
+    bl_description = "Export P3D, model.cfg, config.cpp and scripts"
+
+    def execute(self, context):
+        scene = context.scene
+
+        raw = getattr(scene, "dgm_p3d_path", "").strip()
+        if not raw:
+            self.report({'ERROR'}, "Set the P3D path first (click the folder icon next to P3D)")
+            return {'CANCELLED'}
+
+        p3d_path = bpy.path.abspath(raw)
+        if not p3d_path.lower().endswith(".p3d"):
+            p3d_path += ".p3d"
+
+        class_name = os.path.splitext(os.path.basename(p3d_path))[0]
+        model_dir = os.path.dirname(p3d_path)
+        os.makedirs(model_dir, exist_ok=True)
+
+        # Textures directory
+        tex_path_raw = getattr(scene, "dgm_textures_path", "").strip()
+        textures_dir = bpy.path.abspath(tex_path_raw) if tex_path_raw else ""
+
+        # Scripts directory
+        scripts_path_raw = getattr(scene, "dgm_scripts_path", "").strip()
+        scripts_dir = bpy.path.abspath(scripts_path_raw) if scripts_path_raw else ""
+        export_container_base = getattr(scene, "dgm_export_container_base", True)
+
+        # Ensure there is an active object
+        target = getattr(scene, "dgm_target_object", None)
         if target is None:
-            for obj in context.scene.objects:
+            for obj in scene.objects:
                 if obj.type == 'MESH':
                     target = obj
                     break
         if target is not None:
-            for obj in context.scene.objects:
+            for obj in scene.objects:
                 obj.select_set(False)
             target.select_set(True)
             context.view_layer.objects.active = target
 
-        if self.selection_only:
-            objects = list(context.selected_objects)
-        else:
-            objects = list(bpy.data.objects)
+        objects = list(bpy.data.objects)
 
-        # Resolve bake output dir and model name before writing P3D.
-        # Always derive from the P3D export path so textures land next to the model.
-        if self.bake_textures:
-            model_name = os.path.splitext(os.path.basename(self.filepath))[0]
-            if self.filepath:
-                output_dir = os.path.join(os.path.dirname(bpy.path.abspath(self.filepath)), "data")
-            else:
-                output_dir = baker_bridge.baker_output_path()
-            output_dir = bpy.path.abspath(output_dir) if output_dir else ""
-            bake_rvmat = getattr(context.scene, "dayz_bake_rvmat", False)
-
-            # Stamp predicted CO/RVMAT paths onto every selection_mat before P3D write
-            if output_dir:
-                baker_bridge.pre_assign_bake_paths(objects, output_dir, model_name, bake_rvmat)
+        # Pre-assign texture paths so the P3D is written with correct paths
+        has_bake = target and hasattr(target, "dgm_props") and any(
+            sm.bake_texture for sm in target.dgm_props.selection_mats
+        )
+        bake_rvmat = getattr(scene, "dayz_bake_rvmat", False)
+        if has_bake and textures_dir:
+            os.makedirs(textures_dir, exist_ok=True)
+            baker_bridge.pre_assign_bake_paths(objects, textures_dir, class_name, bake_rvmat)
 
         result = export_objects_as_p3d(
-            self,
-            self.filepath,
-            objects,
-            apply_modifiers=self.apply_modifiers,
-            merge_same_lod=self.merge_same_lod,
-            renumber_components=self.renumber_components,
-            apply_transforms=self.apply_transforms,
-            write_model_cfg_file=self.write_model_cfg_file,
+            self, p3d_path, objects,
+            apply_modifiers=True,
+            merge_same_lod=True,
+            renumber_components=True,
+            apply_transforms=True,
+            write_model_cfg_file=True,
         )
 
-        # Bake after the P3D is written.
-        # The export loop deletes all its temp objects and leaves active=None,
-        # so re-select the target explicitly before invoking the baker.
-        if self.bake_textures and 'FINISHED' in result:
-            if target is None or target.type != 'MESH':
-                self.report({'WARNING'}, "Bake skipped — set a Target Object in the DayZ Geometry Maker panel first.")
-            else:
-                for obj in context.scene.objects:
-                    obj.select_set(False)
+        if 'FINISHED' not in result:
+            return result
+
+        # Bake textures after P3D is written
+        if has_bake and baker_bridge.baker_licensed():
+            for obj in scene.objects:
+                obj.select_set(False)
+            if target:
                 target.select_set(True)
                 context.view_layer.objects.active = target
-
-                baked = baker_bridge.run_baker_and_assign(self, objects, model_name, p3d_filepath=self.filepath)
-                if not baked:
-                    self.report({'WARNING'}, "Texture bake/assign step failed — check the DayZ Texture Tools panel.")
-
-        return result
-
-    def draw(self, context):
-        layout = self.layout
-        layout.prop(self, "selection_only")
-        layout.prop(self, "apply_modifiers")
-        layout.prop(self, "merge_same_lod")
-        layout.prop(self, "renumber_components")
-        layout.prop(self, "apply_transforms")
-        layout.prop(self, "write_model_cfg_file")
-
-        layout.separator()
-        licensed = baker_bridge.baker_licensed()
-        box = layout.box()
-        box.label(text="DayZ Texture Baker", icon='NODE_TEXTURE')
-        col = box.column()
-        col.enabled = licensed
-        col.prop(self, "bake_textures")
-        if not licensed:
-            col.label(text="Not licensed — activate in Preferences > DayZ Texture Tools", icon='LOCKED')
-        elif self.bake_textures:
-            if self.filepath:
-                output = os.path.join(os.path.dirname(self.filepath), "data") + os.sep
-            else:
-                output = baker_bridge.baker_output_path()
-            col.label(
-                text="Output: {}".format(output or "Set P3D path first"),
-                icon='FILE_FOLDER' if output else 'INFO',
+            baked = baker_bridge.run_baker_and_assign(
+                self, objects, class_name, p3d_filepath=p3d_path
             )
-            # Show predicted CO path per named selection
-            bake_rvmat = getattr(context.scene, "dayz_bake_rvmat", False)
-            output_dir = bpy.path.abspath(output) if output else ""
-            model_name = os.path.splitext(os.path.basename(self.filepath))[0]
-            dayz_objects = [o for o in bpy.data.objects
-                            if o.type == 'MESH' and getattr(o.dgm_props, "is_dayz_object", False)]
-            seen = set()
-            for obj in dayz_objects:
-                for sm in obj.dgm_props.selection_mats:
-                    sel_name = baker_bridge._selection_base_name(sm)
-                    if not sel_name or sel_name in seen:
-                        continue
-                    seen.add(sel_name)
-                    co, rv = baker_bridge.predict_texture_paths(output_dir, model_name, sel_name)
-                    col.label(text="{}: {}".format(sel_name, co or "—"), icon='IMAGE_DATA')
-                    if bake_rvmat and rv:
-                        col.label(text="  rvmat: {}".format(rv), icon='FILE_TEXT')
+            if not baked:
+                self.report({'WARNING'}, "Texture bake failed — check DayZ Texture Tools panel")
+
+        # Write config files and scripts
+        try:
+            _export_mod_files(p3d_path, class_name, scene, scripts_dir, export_container_base)
+        except Exception as e:
+            self.report({'WARNING'}, "Config/script export failed: " + str(e))
+
+        self.report({'INFO'}, "Export complete: " + p3d_path)
+        return {'FINISHED'}
 
 
 def menu_func_export(self, context):
     self.layout.operator(DGM_OT_export_p3d.bl_idname, text="DayZ P3D (.p3d)")
 
 
-export_classes = (DGM_OT_export_p3d,)
+export_classes = (DGM_OT_pick_p3d_path, DGM_OT_export_p3d,)
 
 
 def register():

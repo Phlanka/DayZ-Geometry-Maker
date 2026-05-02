@@ -134,14 +134,6 @@ class DGMSelectionMaterial(bpy.types.PropertyGroup):
         ),
         default="",
     )
-    no_texture: bpy.props.BoolProperty(
-        name="No Texture",
-        description=(
-            "This selection has no texture — it is geometry-only or shares a UV with another "
-            "selection. Hides texture/RVMAT fields and excludes this selection from baking"
-        ),
-        default=False,
-    )
     bake_texture: bpy.props.BoolProperty(
         name="Bake Texture",
         description=(

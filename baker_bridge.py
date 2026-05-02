@@ -132,24 +132,37 @@ def predict_texture_paths(output_dir: str, model_name: str, sel_name: str) -> tu
 
 def pre_assign_bake_paths(objects: list, output_dir: str, model_name: str, bake_rvmat: bool) -> None:
     """
-    Stamp predicted CO/RVMAT paths onto every selection_mat before the P3D is
-    written, so the file contains correct paths even before the images exist.
+    Stamp predicted CO/RVMAT paths onto selection_mats that have bake_texture=True,
+    so the P3D file has correct paths even before the images exist.
+    Only processes the dgm_target_object's selection list.
     """
-    for obj in objects:
-        props = getattr(obj, "dgm_props", None)
-        if props is None or not props.is_dayz_object:
+    target_obj = bpy.context.scene.dgm_target_object
+    if not target_obj:
+        # Fallback to any DayZ object in the provided list
+        for obj in objects:
+            props = getattr(obj, "dgm_props", None)
+            if props and props.is_dayz_object:
+                target_obj = obj
+                break
+    if not target_obj:
+        return
+    props = getattr(target_obj, "dgm_props", None)
+    if props is None:
+        return
+    for sm in props.selection_mats:
+        if not sm.bake_texture:
+            # Clear any previously auto-stamped paths so they don't end up in the P3D
+            sm.texture = ""
+            sm.rv_mat = ""
             continue
-        for sm in props.selection_mats:
-            if sm.no_texture:
-                continue
-            sel_name = _selection_base_name(sm)
-            if not sel_name:
-                continue
-            co_path, rv_path = predict_texture_paths(output_dir, model_name, sel_name)
-            if co_path:
-                sm.texture = co_path
-            if bake_rvmat and rv_path:
-                sm.rv_mat = rv_path
+        sel_name = _selection_base_name(sm)
+        if not sel_name:
+            continue
+        co_path, rv_path = predict_texture_paths(output_dir, model_name, sel_name)
+        if co_path:
+            sm.texture = co_path
+        if bake_rvmat and rv_path:
+            sm.rv_mat = rv_path
 
 
 def assign_baked_textures_to_lods(operator, objects: list, output_dir: str, model_name: str) -> bool:
@@ -385,7 +398,7 @@ def run_baker_and_assign(operator, objects: list, model_name: str, p3d_filepath:
     temp_dir = os.path.join(os.path.dirname(final_dir), "data_temp")
     os.makedirs(temp_dir, exist_ok=True)
 
-    # Collect all selection names that have a vertex group on the target object
+    # Collect selection names that are marked for baking on the target object
     target_obj = bpy.context.scene.dgm_target_object
     if not target_obj:
         # Fallback: scan dgm objects for any target
@@ -395,25 +408,18 @@ def run_baker_and_assign(operator, objects: list, model_name: str, p3d_filepath:
                 target_obj = obj
                 break
 
-    # List of (sel_name, vgroup_name) pairs — sel_name is what gets written to filenames,
-    # vgroup_name is used to isolate the geometry on the target object.
+    # List of (sel_name, vgroup_name) pairs — only entries with bake_texture=True
     sel_entries = []
     if target_obj:
-        for sm_obj in bpy.data.objects:
-            props = getattr(sm_obj, "dgm_props", None)
-            if props is None or not props.is_dayz_object:
-                continue
+        props = getattr(target_obj, "dgm_props", None)
+        if props:
             for sm in props.selection_mats:
-                # Skip selections with no texture or not marked for baking
-                if sm.no_texture or not sm.bake_texture:
+                if not sm.bake_texture:
                     continue
                 sel_name = _selection_base_name(sm)
                 vgroup_name = sm.vgroup_name or sel_name
                 if not sel_name:
                     continue
-                if any(e[0] == sel_name for e in sel_entries):
-                    continue
-                # Use vgroup_name to find the vertex group — sel_name may differ
                 vg = target_obj.vertex_groups.get(vgroup_name) or target_obj.vertex_groups.get(sel_name)
                 if vg:
                     sel_entries.append((sel_name, vg.name))
@@ -490,20 +496,22 @@ def run_baker_and_assign(operator, objects: list, model_name: str, p3d_filepath:
 
     def _assign_all_paths():
         assigned = 0
-        for obj in bpy.data.objects:
-            props = getattr(obj, "dgm_props", None)
-            if props is None or not props.is_dayz_object:
+        t_props = getattr(target_obj, "dgm_props", None) if target_obj else None
+        if t_props is None:
+            print("[DGM] Bake complete — no target object to assign paths to.")
+            return
+        for sm in t_props.selection_mats:
+            if not sm.bake_texture:
                 continue
-            for sm in props.selection_mats:
-                name = _selection_base_name(sm)
-                if not name:
-                    continue
-                co_path, rv_path = predict_texture_paths(final_dir, model_name, name)
-                if co_path:
-                    sm.texture = co_path
-                    assigned += 1
-                if bake_rvmat and rv_path:
-                    sm.rv_mat = rv_path
+            name = _selection_base_name(sm)
+            if not name:
+                continue
+            co_path, rv_path = predict_texture_paths(final_dir, model_name, name)
+            if co_path:
+                sm.texture = co_path
+                assigned += 1
+            if bake_rvmat and rv_path:
+                sm.rv_mat = rv_path
         print("[DGM] Bake complete — assigned paths to {} named selections.".format(assigned))
 
     def _start_next():
