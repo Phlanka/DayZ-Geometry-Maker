@@ -2,7 +2,7 @@
 
 A free, open-source Blender 5.0 extension for creating and exporting DayZ / Arma P3D models — no ArmaToolbox required.
 
-Built and maintained by [Phlanka](https://phlanka.com).
+Built and maintained by [Phlanka](https://phlanka.com), with contributions.
 
 ---
 
