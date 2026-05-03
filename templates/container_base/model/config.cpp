@@ -31,6 +31,7 @@ class CfgVehicles
 		weight=30000;
 		itemSize[]={10,15};
 		itemBehaviour=0;
+		physLayer="item_large";
 		allowOwnedCargoManipulation=1;
 		class DamageSystem
 		{
