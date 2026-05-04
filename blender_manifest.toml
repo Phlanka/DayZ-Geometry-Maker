@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "dayz_geometry_maker"
-version = "2.0.6"
+version = "2.0.7"
 name = "DayZ Geometry Maker"
 tagline = "Create DayZ/Arma P3D geometry LODs, memory points, and export to P3D without ArmaToolbox"
 maintainer = "Phlanka <phlanka.com@gmail.com>"

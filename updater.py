@@ -21,6 +21,7 @@ BETA_TIMESTAMP_FILE = os.path.join(ADDON_DIR, "beta_last_check.json")
 
 # Set from bl_info at register time
 CURRENT_VERSION = (2, 0, 7)
+ADDON_BL_IDNAME = "bl_ext.user_default.dayz_geometry_maker"
 
 _update_available    = False
 _latest_version_str  = ""
@@ -316,7 +317,7 @@ updater_classes = (
 # ---------------------------------------------------------------------------
 
 class DGMAddonPreferences(bpy.types.AddonPreferences):
-    bl_idname = "dayz_geometry_maker"
+    bl_idname = ADDON_BL_IDNAME
 
     early_access: bpy.props.BoolProperty(
         name="Early Access",
