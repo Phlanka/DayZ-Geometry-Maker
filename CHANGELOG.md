@@ -1,24 +1,21 @@
 # Changelog
 
-## [Unreleased]
+## [2.0.8] - 2026-05-04
 
 ### Added
-- **Early Access mode** — Addon preferences now has an Early Access toggle. When enabled, a "Check for Changes" button checks the live GitHub main branch for source files changed since the last pull (or since the latest release on first use). Shows a list of changed files and a Download button that overwrites local copies and prompts a Blender restart. Pull timestamp is stored locally in `beta_last_check.json`
-- **Preferences panel** — Addon now has a proper preferences panel (Edit > Preferences > Add-ons > DayZ Geometry Maker) with release update check and Early Access section
-
-### Fixed
-- **Update banner showing incorrectly** — `CURRENT_VERSION` in updater.py was out of sync with `bl_info` version, causing the update banner to always appear. Now reads the correct current version
-
-### Added
-- **HouseNoDestruct config template** — Export section now has a Config Template dropdown. Choose between `Container Base`, `House (Static Obj)` (inherits `HouseNoDestruct`), or `None`. Only one can be selected at a time. The house template includes full `DamageSystem` with projectile/melee set to zero damage (indestructible static object)
-- **Auto-generated `class Doors {}` block** — When doors are configured in the panel, the container `config.cpp` now includes a `class Doors {}` entry per door with `component`, `soundPos`, `animPeriod`, and default wooden door sound sets. Component name matches the door vertex group name
+- **HouseNoDestruct config template** — Export section now has a Config Template dropdown. Choose between `Container Base`, `House (Static Obj)` (inherits `HouseNoDestruct`), or `None`. Only one can be selected at a time. The house template includes a full `DamageSystem` with projectile/melee set to zero damage (indestructible static object)
+- **Auto-generated `class Doors {}` block** — When doors are configured in the panel, the container `config.cpp` now includes a `class Doors {}` entry per door with `component`, `soundPos`, `animPeriod`, and default sound sets. Component name matches the door vertex group name
 - **Auto-generated `DamageZones` per door** — Container `config.cpp` now includes a `class DamageZones` block inside `DamageSystem` with one entry per configured door, using `componentNames[]` matching the door vertex group name
 - **Add Door Geometry now creates all three geometry LODs** — Fire Geometry and View Geometry door meshes are created alongside the Geometry LOD mesh. Each carries only the door vertex group name as its named selection (no `ComponentXX`) — the named selection is what DayZ uses to animate collision with the door
+- **Preferences panel** — Addon now has a proper preferences panel (Edit > Preferences > Add-ons > DayZ Geometry Maker) with release update check and Early Access section
+- **Early Access mode** — Toggle in preferences. When enabled, a Check for Changes button checks the live GitHub main branch for source files changed since your last pull. Shows a list of changed files and a Download button that overwrites local copies and prompts a Blender restart
 
 ### Changed
-- **Fire Geometry** now skips `Geometry_door_*` objects when copying from the Geometry collection — door geometry is handled separately by Add Door Geometry
-- **View Geometry** now copies `ComponentXX` objects from the Geometry collection (skipping `Geometry_door_*`) instead of creating a single bounding box. Falls back to bounding box only if no geometry components exist yet
-- **Git repo moved to addon directory** — `C:\Users\Phlan\AppData\Roaming\Blender Foundation\Blender\5.0\extensions\user_default\dayz_geometry_maker` is now the working git repo directly. The old `C:\Users\Phlan\source\repos\DayZ-Geometry-Maker` copy is no longer used
+- **Fire Geometry** now skips door geometry objects when copying from the Geometry collection — door geometry is handled separately by Add Door Geometry
+- **View Geometry** now copies `ComponentXX` objects from the Geometry collection instead of creating a single bounding box over the whole model. Falls back to bounding box only if no geometry components exist yet
+
+### Fixed
+- **Update banner showing incorrectly** — Version numbers were out of sync across `bl_info`, `blender_manifest.toml`, and `updater.py`, causing the update banner to always appear. All version references are now consistent
 
 ---
 

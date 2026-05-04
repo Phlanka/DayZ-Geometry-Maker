@@ -11,7 +11,7 @@ and exporting to P3D format. No ArmaToolbox dependency required.
 bl_info = {
     "name": "DayZ Geometry Maker",
     "author": "Phlanka",
-    "version": (2, 0, 7),
+    "version": (2, 0, 8),
     "blender": (4, 2, 0),
     "location": "View3D > Sidebar > DayZ",
     "description": "Create DayZ geometry LODs and export P3D files without ArmaToolbox",

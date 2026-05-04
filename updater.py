@@ -20,7 +20,7 @@ ADDON_DIR         = os.path.dirname(os.path.abspath(__file__))
 BETA_TIMESTAMP_FILE = os.path.join(ADDON_DIR, "beta_last_check.json")
 
 # Set from bl_info at register time
-CURRENT_VERSION = (2, 0, 7)
+CURRENT_VERSION = (2, 0, 8)
 ADDON_BL_IDNAME = "bl_ext.user_default.dayz_geometry_maker"
 
 _update_available    = False
