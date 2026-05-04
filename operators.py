@@ -1404,14 +1404,16 @@ class DGM_PT_main_panel(bpy.types.Panel):
             if has_bake:
                 col.prop(scene, "dgm_textures_path", text="Textures")
 
-            # Scripts path — only when door axis points exist in Memory LOD
-            has_doors = (geometry.memory_point_exists('door_1_axis_1') or
-                         geometry.memory_point_exists('door_1_axis_2'))
-            if has_doors:
-                col.prop(scene, "dgm_scripts_path", text="Scripts")
-                col.separator()
-                col.label(text="Script Templates:")
-                col.prop(scene, "dgm_export_container_base", text="Container Base")
+            col.separator()
+            col.label(text="Config Template:")
+            col.prop(scene, "dgm_config_template", text="")
+
+            # Scripts path — only relevant for container_base template
+            if getattr(scene, "dgm_config_template", "container_base") == 'container_base':
+                has_doors = (geometry.memory_point_exists('door_1_axis_1') or
+                             geometry.memory_point_exists('door_1_axis_2'))
+                if has_doors:
+                    col.prop(scene, "dgm_scripts_path", text="Scripts")
 
             col.separator()
             col.operator("dgm.export_p3d", text="Export", icon='EXPORT')
@@ -1491,8 +1493,15 @@ def register_scene_props():
     S.dgm_scripts_path = bpy.props.StringProperty(
         name="Scripts", subtype='DIR_PATH', default=""
     )
-    S.dgm_export_container_base = bpy.props.BoolProperty(
-        name="Container Base", default=True
+    S.dgm_config_template = bpy.props.EnumProperty(
+        name="Config Template",
+        description="Which config.cpp template to write on export",
+        items=[
+            ('none',             "None",              "Do not write a config.cpp"),
+            ('container_base',   "Container Base",    "Storage container — inherits Container_Base"),
+            ('house_no_destruct',"House (Static Obj)","Static world object — inherits HouseNoDestruct"),
+        ],
+        default='container_base',
     )
 
     # Resolution LOD toggles + view distances (real game meters per wiki guidance)
@@ -1518,7 +1527,7 @@ def unregister_scene_props():
         "dgm_memory_doors_count", "dgm_memory_lights_count",
         "dgm_moving_memory_point",
         "dgm_door_pose_active", "dgm_door_pose_active_idx",
-        "dgm_p3d_path", "dgm_textures_path", "dgm_scripts_path", "dgm_export_container_base",
+        "dgm_p3d_path", "dgm_textures_path", "dgm_scripts_path", "dgm_config_template",
     ]
     for _di in range(1, 9):
         props += [

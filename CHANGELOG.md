@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+- **HouseNoDestruct config template** — Export section now has a Config Template dropdown. Choose between `Container Base`, `House (Static Obj)` (inherits `HouseNoDestruct`), or `None`. Only one can be selected at a time. The house template includes full `DamageSystem` with projectile/melee set to zero damage (indestructible static object)
+- **Auto-generated `class Doors {}` block** — When doors are configured in the panel, the container `config.cpp` now includes a `class Doors {}` entry per door with `component`, `soundPos`, `animPeriod`, and default wooden door sound sets. Component name matches the door vertex group name
+- **Auto-generated `DamageZones` per door** — Container `config.cpp` now includes a `class DamageZones` block inside `DamageSystem` with one entry per configured door, using `componentNames[]` matching the door vertex group name
+- **Add Door Geometry now creates all three geometry LODs** — Fire Geometry and View Geometry door meshes are created alongside the Geometry LOD mesh. Each carries only the door vertex group name as its named selection (no `ComponentXX`) — the named selection is what DayZ uses to animate collision with the door
+
+### Changed
+- **Fire Geometry** now skips `Geometry_door_*` objects when copying from the Geometry collection — door geometry is handled separately by Add Door Geometry
+- **View Geometry** now copies `ComponentXX` objects from the Geometry collection (skipping `Geometry_door_*`) instead of creating a single bounding box. Falls back to bounding box only if no geometry components exist yet
+- **Git repo moved to addon directory** — `C:\Users\Phlan\AppData\Roaming\Blender Foundation\Blender\5.0\extensions\user_default\dayz_geometry_maker` is now the working git repo directly. The old `C:\Users\Phlan\source\repos\DayZ-Geometry-Maker` copy is no longer used
+
+---
+
 ## [2.0.5] - 2026-05-02
 
 ### Added

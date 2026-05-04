@@ -60,6 +60,7 @@ class CfgVehicles
 					};
 				};
 			};
+			DAMAGEZONES
 		};
 		class Cargo
 		{
@@ -68,6 +69,7 @@ class CfgVehicles
 			allowOwnedCargoManipulation=1;
 		};
 		ANIMSOURCES
+		DOORS
 		soundImpactType="metal";
 		class AnimEvents
 		{

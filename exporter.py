@@ -696,6 +696,75 @@ def _build_animphases(scene):
     return ("\n\t\t").join(lines)
 
 
+def _build_damage_zones(scene):
+    """Return per-door DamageZones entries, or empty string if no doors configured."""
+    lines = []
+    door_count = getattr(scene, "dgm_memory_doors_count", 0)
+    for di in range(1, door_count + 1):
+        vg = getattr(scene, "dgm_door_{}_vgroup".format(di), "").strip()
+        if not vg:
+            continue
+        lines.append(
+            "\t\t\t\tclass {vg}\n"
+            "\t\t\t\t{{\n"
+            "\t\t\t\t\tclass Health\n"
+            "\t\t\t\t\t{{\n"
+            "\t\t\t\t\t\thitpoints=1000;\n"
+            "\t\t\t\t\t\ttransferToGlobalCoef=0;\n"
+            "\t\t\t\t\t}};\n"
+            "\t\t\t\t\tcomponentNames[]={{\"{vg}\"}};\n"
+            "\t\t\t\t\tfatalInjuryCoef=-1;\n"
+            "\t\t\t\t\tclass ArmorType\n"
+            "\t\t\t\t\t{{\n"
+            "\t\t\t\t\t\tclass Projectile\n"
+            "\t\t\t\t\t\t{{\n"
+            "\t\t\t\t\t\t\tclass Health {{ damage=2; }};\n"
+            "\t\t\t\t\t\t\tclass Blood {{ damage=0; }};\n"
+            "\t\t\t\t\t\t\tclass Shock {{ damage=0; }};\n"
+            "\t\t\t\t\t\t}};\n"
+            "\t\t\t\t\t\tclass Melee\n"
+            "\t\t\t\t\t\t{{\n"
+            "\t\t\t\t\t\t\tclass Health {{ damage=2.5; }};\n"
+            "\t\t\t\t\t\t\tclass Blood {{ damage=0; }};\n"
+            "\t\t\t\t\t\t\tclass Shock {{ damage=0; }};\n"
+            "\t\t\t\t\t\t}};\n"
+            "\t\t\t\t\t}};\n"
+            "\t\t\t\t}};".format(vg=vg)
+        )
+    if not lines:
+        return ""
+    return "\t\t\t\tclass DamageZones\n\t\t\t\t{\n" + "\n".join(lines) + "\n\t\t\t\t};\n"
+
+
+def _build_doors_block(scene):
+    """Return a class Doors {} block from door panel settings, or empty string."""
+    lines = []
+    door_count = getattr(scene, "dgm_memory_doors_count", 0)
+    for di in range(1, door_count + 1):
+        vg = getattr(scene, "dgm_door_{}_vgroup".format(di), "").strip()
+        period = getattr(scene, "dgm_door_{}_anim_period".format(di), 0.15)
+        if not vg:
+            continue
+        lines.append(
+            "\t\tclass {vg}\n"
+            "\t\t{{\n"
+            "\t\t\tdisplayName=\"{vg}\";\n"
+            "\t\t\tcomponent=\"{vg}\";\n"
+            "\t\t\tsoundPos=\"{vg}_action\";\n"
+            "\t\t\tanimPeriod={period:.2f};\n"
+            "\t\t\tinitPhase=0.0;\n"
+            "\t\t\tinitOpened=0.0;\n"
+            "\t\t\tsoundOpen=\"doorWoodenSmallOpen\";\n"
+            "\t\t\tsoundClose=\"doorWoodenSmallClose\";\n"
+            "\t\t\tsoundLocked=\"doorWoodenSmallRattle\";\n"
+            "\t\t\tsoundOpenABit=\"doorWoodenSmallOpenABit\";\n"
+            "\t\t}};".format(vg=vg, period=period)
+        )
+    if not lines:
+        return ""
+    return "\t\tclass Doors\n\t\t{\n" + "\n".join(lines) + "\n\t\t};\n"
+
+
 def _build_cfgmods(class_name, scripts_root):
     """Build the CfgMods block using the actual scripts folder path, or return empty string."""
     if not scripts_root:
@@ -743,14 +812,20 @@ def _build_cfgmods(class_name, scripts_root):
     ).format(cn=class_name, sp=scripts_rel)
 
 
-def _export_mod_files(p3d_path, class_name, scene, scripts_root, export_container_base):
-    """Write config.cpp and scripts next to the p3d."""
-    addon_dir = os.path.dirname(__file__)
-    template_base = os.path.join(addon_dir, "templates", "container_base")
+def _export_mod_files(p3d_path, class_name, scene, scripts_root, config_template):
+    """Write config.cpp and scripts next to the p3d.
 
+    config_template: 'container_base', 'house_no_destruct', or 'none'.
+    """
+    if config_template == 'none':
+        return
+
+    addon_dir = os.path.dirname(__file__)
+    template_base = os.path.join(addon_dir, "templates", config_template)
     model_dir = os.path.dirname(p3d_path)
 
-    cfgmods = _build_cfgmods(class_name, scripts_root) if (export_container_base and scripts_root) else ""
+    use_scripts = (config_template == 'container_base' and scripts_root)
+    cfgmods = _build_cfgmods(class_name, scripts_root) if use_scripts else ""
 
     # Model path: absolute path stripped of drive, backslashes, no leading slash
     model_path = os.path.abspath(p3d_path)
@@ -762,6 +837,8 @@ def _export_mod_files(p3d_path, class_name, scene, scripts_root, export_containe
         "CFGMODS\n": cfgmods,
         "ANIMSOURCES": _build_animsources(scene),
         "ANIMPHASES": _build_animphases(scene),
+        "DOORS\n": _build_doors_block(scene),
+        "DAMAGEZONES\n": _build_damage_zones(scene),
     }
 
     def _write_template(src_path, dst_path):
@@ -773,14 +850,14 @@ def _export_mod_files(p3d_path, class_name, scene, scripts_root, export_containe
         with open(dst_path, "w", encoding="utf-8") as f:
             f.write(content)
 
-    # config.cpp next to the p3d — contains CfgPatches + CfgMods + CfgVehicles
+    # config.cpp next to the p3d
     _write_template(
         os.path.join(template_base, "model", "config.cpp"),
         os.path.join(model_dir, "config.cpp"),
     )
 
-    # 4_World scripts — output into scripts_root/4_World/
-    if export_container_base and scripts_root:
+    # 4_World scripts — container_base only
+    if use_scripts:
         scripts_template = os.path.join(template_base, "4_World")
         scripts_out = os.path.join(scripts_root, "4_World")
         for dirpath, dirnames, filenames in os.walk(scripts_template):
@@ -856,7 +933,7 @@ class DGM_OT_export_p3d(bpy.types.Operator):
         # Scripts directory
         scripts_path_raw = getattr(scene, "dgm_scripts_path", "").strip()
         scripts_dir = bpy.path.abspath(scripts_path_raw) if scripts_path_raw else ""
-        export_container_base = getattr(scene, "dgm_export_container_base", True)
+        config_template = getattr(scene, "dgm_config_template", "container_base")
 
         # Ensure there is an active object
         target = getattr(scene, "dgm_target_object", None)
@@ -909,7 +986,7 @@ class DGM_OT_export_p3d(bpy.types.Operator):
 
         # Write config files and scripts
         try:
-            _export_mod_files(p3d_path, class_name, scene, scripts_dir, export_container_base)
+            _export_mod_files(p3d_path, class_name, scene, scripts_dir, config_template)
         except Exception as e:
             self.report({'WARNING'}, "Config/script export failed: " + str(e))
 
