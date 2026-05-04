@@ -3,6 +3,13 @@
 ## [Unreleased]
 
 ### Added
+- **Early Access mode** — Addon preferences now has an Early Access toggle. When enabled, a "Check for Changes" button checks the live GitHub main branch for source files changed since the last pull (or since the latest release on first use). Shows a list of changed files and a Download button that overwrites local copies and prompts a Blender restart. Pull timestamp is stored locally in `beta_last_check.json`
+- **Preferences panel** — Addon now has a proper preferences panel (Edit > Preferences > Add-ons > DayZ Geometry Maker) with release update check and Early Access section
+
+### Fixed
+- **Update banner showing incorrectly** — `CURRENT_VERSION` in updater.py was out of sync with `bl_info` version, causing the update banner to always appear. Now reads the correct current version
+
+### Added
 - **HouseNoDestruct config template** — Export section now has a Config Template dropdown. Choose between `Container Base`, `House (Static Obj)` (inherits `HouseNoDestruct`), or `None`. Only one can be selected at a time. The house template includes full `DamageSystem` with projectile/melee set to zero damage (indestructible static object)
 - **Auto-generated `class Doors {}` block** — When doors are configured in the panel, the container `config.cpp` now includes a `class Doors {}` entry per door with `component`, `soundPos`, `animPeriod`, and default wooden door sound sets. Component name matches the door vertex group name
 - **Auto-generated `DamageZones` per door** — Container `config.cpp` now includes a `class DamageZones` block inside `DamageSystem` with one entry per configured door, using `componentNames[]` matching the door vertex group name
