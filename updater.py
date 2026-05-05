@@ -32,7 +32,16 @@ if os.path.basename(ADDON_DIR) not in ("dayz_geometry_maker",):
         ADDON_DIR = _candidate
 ADDON_BL_IDNAME     = "bl_ext.user_default.dayz_geometry_maker"
 
-CURRENT_VERSION     = (2, 1, 1)  # keep in sync with bl_info in __init__.py
+# Read version from bl_info — single source of truth, no need to update here
+def _get_current_version():
+    try:
+        import importlib
+        init = importlib.import_module("bl_ext.user_default.dayz_geometry_maker")
+        return tuple(init.bl_info["version"])
+    except Exception:
+        return (0, 0, 0)
+
+CURRENT_VERSION = _get_current_version()
 
 # Files that live in the repo but not in the local addon folder - skip these
 REPO_ONLY_FILES = {
