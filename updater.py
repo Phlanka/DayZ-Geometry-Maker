@@ -24,9 +24,15 @@ GITHUB_API_RELEASE  = "https://api.github.com/repos/Phlanka/DayZ-Geometry-Maker/
 GITHUB_TREE         = "https://api.github.com/repos/Phlanka/DayZ-Geometry-Maker/git/trees/{branch}?recursive=1"
 GITHUB_RAW          = "https://raw.githubusercontent.com/Phlanka/DayZ-Geometry-Maker/{branch}/{path}"
 ADDON_DIR           = os.path.dirname(os.path.abspath(__file__))
+# Safety check: if updater.py ended up directly in user_default/ (bad install),
+# correct the path to the actual addon subfolder
+if os.path.basename(ADDON_DIR) not in ("dayz_geometry_maker",):
+    _candidate = os.path.join(ADDON_DIR, "dayz_geometry_maker")
+    if os.path.isdir(_candidate):
+        ADDON_DIR = _candidate
 ADDON_BL_IDNAME     = "bl_ext.user_default.dayz_geometry_maker"
 
-CURRENT_VERSION     = (2, 1, 0)  # keep in sync with bl_info in __init__.py
+CURRENT_VERSION     = (2, 1, 1)  # keep in sync with bl_info in __init__.py
 
 # Files that live in the repo but not in the local addon folder - skip these
 REPO_ONLY_FILES = {
@@ -367,7 +373,6 @@ class DGMAddonPreferences(bpy.types.AddonPreferences):
             box.label(text="Release Updates", icon='URL')
 
             if _update_available:
-                # Newer version available
                 row = box.row(align=True)
                 row.label(text="Update available: {}".format(_latest_version_str), icon='INFO')
                 row.operator("dgm.install_update", text="Install Now", icon='IMPORT')
@@ -378,11 +383,10 @@ class DGMAddonPreferences(bpy.types.AddonPreferences):
                     for line in _latest_changelog.splitlines():
                         line = line.strip()
                         if line:
-                            col.label(text=line[:80])  # cap width for panel
+                            col.label(text=line[:80])
                 box.operator("dgm.check_update", text="Re-check", icon='FILE_REFRESH')
 
             elif _release_check_done:
-                # Check complete, already up to date
                 box.label(
                     text="You are up to date  (v{}.{}.{})".format(*CURRENT_VERSION),
                     icon='CHECKMARK',
@@ -398,5 +402,51 @@ class DGMAddonPreferences(bpy.types.AddonPreferences):
                 box.operator("dgm.check_update", text="Re-check", icon='FILE_REFRESH')
 
             else:
-                # Not yet checked (or check in progress)
-                b
+                box.label(text="Checking for updates...", icon='FILE_REFRESH')
+                box.operator("dgm.check_update", text="Check Now", icon='FILE_REFRESH')
+
+        else:
+            # ---- dev: file-level diff + pull ----
+            box = layout.box()
+            box.label(text="Dev Branch Updates", icon='SCRIPT')
+
+            if _dev_check_running:
+                box.label(text="Checking dev branch...", icon='FILE_REFRESH')
+
+            elif _dev_check_done:
+                if _dev_changed_files:
+                    box.label(
+                        text="{} file(s) differ from dev branch:".format(len(_dev_changed_files)),
+                        icon='ERROR',
+                    )
+                    col = box.column(align=True)
+                    for f in _dev_changed_files:
+                        col.label(text=f, icon='DOT')
+                    box.separator()
+                    row = box.row(align=True)
+                    row.operator("dgm.dev_pull", text="Pull All Changes", icon='IMPORT')
+                    row.operator("dgm.dev_check", text="Re-check", icon='FILE_REFRESH')
+                else:
+                    box.label(text="Up to date with dev branch.", icon='CHECKMARK')
+                    box.operator("dgm.dev_check", text="Re-check", icon='FILE_REFRESH')
+
+            else:
+                box.label(text="Click below to compare with dev branch.", icon='INFO')
+                box.operator("dgm.dev_check", text="Check dev branch", icon='FILE_REFRESH')
+
+
+# ---------------------------------------------------------------------------
+# Register / Unregister
+# ---------------------------------------------------------------------------
+
+def register():
+    for cls in updater_classes:
+        bpy.utils.register_class(cls)
+    bpy.utils.register_class(DGMAddonPreferences)
+    check_for_update()
+
+
+def unregister():
+    bpy.utils.unregister_class(DGMAddonPreferences)
+    for cls in reversed(updater_classes):
+        bpy.utils.unregister_class(cls)
