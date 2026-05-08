@@ -7,6 +7,52 @@ import math
 from . import geometry, updater, baker_bridge, ladder_generator, cabin_generator
 
 
+
+# ---------------------------------------------------------------------------
+# Transform check helper
+# ---------------------------------------------------------------------------
+
+def _check_and_apply_transforms(operator, context):
+    """
+    Check if the target object has unapplied location, rotation or scale.
+    If so, auto-apply them and warn the user so they know it happened.
+    Returns True if safe to proceed, False if no target object.
+    """
+    import mathutils
+    obj = context.scene.dgm_target_object
+    if not obj:
+        return False
+
+    identity_loc   = obj.location == mathutils.Vector((0.0, 0.0, 0.0))
+    identity_rot   = obj.rotation_euler == mathutils.Euler((0.0, 0.0, 0.0))
+    identity_scale = obj.scale == mathutils.Vector((1.0, 1.0, 1.0))
+
+    if not (identity_loc and identity_rot and identity_scale):
+        # Save selection state, apply transforms, restore
+        prev_active = context.view_layer.objects.active
+        prev_selected = [o for o in context.selected_objects]
+
+        for o in context.selected_objects:
+            o.select_set(False)
+
+        obj.select_set(True)
+        context.view_layer.objects.active = obj
+        bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
+
+        obj.select_set(False)
+        for o in prev_selected:
+            o.select_set(True)
+        context.view_layer.objects.active = prev_active
+
+        operator.report(
+            {'WARNING'},
+            "Transforms applied to '{}' automatically — location, rotation and scale "
+            "have been reset to avoid floating or misaligned LODs.".format(obj.name)
+        )
+
+    return True
+
+
 # ---------------------------------------------------------------------------
 # Geometry operators
 # ---------------------------------------------------------------------------
@@ -39,6 +85,7 @@ class DGM_OT_create_geometry(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         geometry.create_geometry(mass=self.mass)
         return {'FINISHED'}
 
@@ -73,6 +120,7 @@ class DGM_OT_create_geometry_from_selection(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         result = geometry.create_geometry_from_selection(self, mass=self.mass)
         return {'FINISHED'} if result else {'CANCELLED'}
 
@@ -90,6 +138,7 @@ class DGM_OT_create_view_geometry(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         geometry.create_view_geometry()
         return {'FINISHED'}
 
@@ -142,6 +191,7 @@ class DGM_OT_create_shadow_volumes(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         geometry.create_shadow_volumes()
         self.report({'INFO'}, "Shadow Volume and Shadow Volume 2 created")
         return {'FINISHED'}
@@ -160,6 +210,7 @@ class DGM_OT_create_view_pilot(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         geometry.create_view_interior("View Pilot")
         return {'FINISHED'}
 
@@ -174,6 +225,7 @@ class DGM_OT_create_view_gunner(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         geometry.create_view_interior("View Gunner")
         return {'FINISHED'}
 
@@ -188,6 +240,7 @@ class DGM_OT_create_view_cargo(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         geometry.create_view_interior("View Cargo")
         return {'FINISHED'}
 
@@ -205,6 +258,7 @@ class DGM_OT_create_land_contact(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         geometry.create_land_contact()
         return {'FINISHED'}
 
@@ -223,6 +277,7 @@ class DGM_OT_create_roadway(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         geometry.create_roadway()
         return {'FINISHED'}
 
@@ -244,6 +299,7 @@ class DGM_OT_memory_add_bbox(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         geometry.add_memory_bbox()
         return {'FINISHED'}
 
@@ -257,6 +313,7 @@ class DGM_OT_memory_add_invview(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         geometry.add_memory_invview()
         return {'FINISHED'}
 
@@ -270,6 +327,7 @@ class DGM_OT_memory_add_center(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         geometry.add_memory_center()
         return {'FINISHED'}
 
@@ -283,6 +341,7 @@ class DGM_OT_memory_add_radius(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         geometry.add_memory_radius()
         return {'FINISHED'}
 
@@ -356,6 +415,7 @@ class DGM_OT_memory_add_ladder(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         geometry.add_memory_ladder()
         return {'FINISHED'}
 
@@ -369,6 +429,7 @@ class DGM_OT_memory_add_lights(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         geometry.add_memory_lights(context.scene.dgm_memory_lights_count)
         return {'FINISHED'}
 
@@ -382,6 +443,7 @@ class DGM_OT_memory_add_damage(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         geometry.add_memory_damage()
         return {'FINISHED'}
 
@@ -395,6 +457,7 @@ class DGM_OT_memory_add_doors(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         geometry.add_memory_doors(context.scene.dgm_memory_doors_count)
         return {'FINISHED'}
 
@@ -725,6 +788,7 @@ class DGM_OT_create_lods(bpy.types.Operator):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
+        _check_and_apply_transforms(self, context)
         geometry.create_lod_meshes()
         return {'FINISHED'}
 
