@@ -127,24 +127,247 @@ def build_ladder_type1(params):
         z = ground_offset + i * rung_spacing
         _make_tube(bm, (-sx, 0.0, z), (sx, 0.0, z), r, segs)
 
+    # Optional safety cage
+    if params.get('cage_enabled', False):
+        _build_cage(bm, params, sx, total_height)
+
     bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=5e-4)
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
 
     return bm, rung_count, total_height
 
 
+# ---------------------------------------------------------------------------
+#  Cage builder — D-arc safety cage
+# ---------------------------------------------------------------------------
+
+def _make_arc_tube(bm, arc_pts, radius, segs):
+    """
+    Build a single continuous tube along a list of centreline points.
+    Each junction between segments shares its ring of vertices — no gaps,
+    no overlapping end-caps, clean manifold result.
+
+    arc_pts : list of Vector, path of tube centreline
+    radius  : tube cross-section radius
+    segs    : sides of tube cross-section
+    """
+    if len(arc_pts) < 2:
+        return
+
+    def _tangent(i):
+        """Local tangent at point i."""
+        if i == 0:
+            return (arc_pts[1] - arc_pts[0]).normalized()
+        if i == len(arc_pts) - 1:
+            return (arc_pts[-1] - arc_pts[-2]).normalized()
+        return (arc_pts[i + 1] - arc_pts[i - 1]).normalized()
+
+    def _frame(tang):
+        """Stable tangent frame perpendicular to tang.
+        Uses Z as primary reference; falls back to X when axis is near Z,
+        and to Y when axis is near both Z and X."""
+        ref = Vector((0.0, 0.0, 1.0))
+        if abs(tang.dot(ref)) > 0.99:
+            ref = Vector((1.0, 0.0, 0.0))
+            if abs(tang.dot(ref)) > 0.99:
+                ref = Vector((0.0, 1.0, 0.0))
+        t2 = tang.cross(ref).normalized()
+        b2 = tang.cross(t2).normalized()
+        return t2, b2
+
+    def _ring(centre, tang):
+        verts = []
+        t2, b2 = _frame(tang)
+        for k in range(segs):
+            a = 2.0 * math.pi * k / segs
+            verts.append(bm.verts.new(
+                centre + t2 * math.cos(a) * radius + b2 * math.sin(a) * radius))
+        return verts
+
+    rings = [_ring(arc_pts[i], _tangent(i)) for i in range(len(arc_pts))]
+
+    # Side quads between adjacent rings
+    for i in range(len(rings) - 1):
+        ra, rb = rings[i], rings[i + 1]
+        for k in range(segs):
+            j = (k + 1) % segs
+            bm.faces.new([ra[k], ra[j], rb[j], rb[k]])
+
+    # End caps only at the two actual ends
+    ca = bm.verts.new(arc_pts[0])
+    cb = bm.verts.new(arc_pts[-1])
+    ra, rb = rings[0], rings[-1]
+    for k in range(segs):
+        j = (k + 1) % segs
+        bm.faces.new([ca, ra[j], ra[k]])
+        bm.faces.new([cb, rb[k], rb[j]])
+
+
+def _build_cage(bm, params, sx, total_height):
+    """
+    Add a safety cage hoop to an existing bmesh.
+
+    Shape per hoop (top view):
+      - Two straight arms extending perpendicular to the ladder plane (-Y direction),
+        one from the right stringer and one from the left stringer.
+        Arm length = cage_arm_length (the green part in the sketch).
+      - A semicircular arc connecting the two arm ends.
+        Arc radius = sx  (so the full arc width = ladder width).
+        Arc deepest point = cage_arm_length + sx behind the ladder.
+
+    This means:
+      cage_arm_length = adjustable (how far the straight part extends)
+      arc radius      = always equals sx (half ladder width)
+      total depth     = cage_arm_length + sx
+
+    Coordinate system: Z=up, X=width, Y=depth (front=+Y, back=-Y).
+    Right stringer at (+sx, 0), left at (-sx, 0).
+
+    params:
+        cage_depth      float  - length of straight arm section (m), default 0.350
+        cage_bar_count  int    - vertical bars, default 5
+        hoop_spacing    float  - vertical spacing between hoops, default 0.900
+        cage_start_z    float  - Z where cage begins, default 2.200
+        cage_tube_d     float  - cage tube diameter, default 0.025
+        resolution      int    - tube cross-section segments
+    """
+    arm_len      = max(0.010, float(params.get('cage_depth',    0.350)))
+    # User sets visible bar count. Internally add 2 for the stringer positions
+    # (index 0 and last_idx) which land on stringers and are not drawn separately.
+    bar_count    = int(params.get('cage_bar_count', 5)) + 2
+    hoop_spacing = float(params.get('hoop_spacing',  0.900))
+    cage_start_z = float(params.get('cage_start_z',  2.200))
+    cage_tube_r  = float(params.get('cage_tube_d',   0.025)) / 2.0
+    segs         = max(4, int(params.get('resolution', 8)))
+    arc_segs     = max(10, segs * 2)
+
+    # Arc: semicircle of radius sx, centred at (0, -arm_len)
+    # Connects (-sx, -arm_len) through (0, -arm_len - sx) to (+sx, -arm_len)
+    arc_cx, arc_cy = 0.0, -arm_len
+    arc_r = sx  # arc radius = half ladder width
+
+    def hoop_points(z):
+        """
+        Return ordered list of centreline points for one complete hoop at height z.
+        Path: right stringer (sx,0) -> straight arm to (sx,-arm_len)
+              -> semicircle to (-sx,-arm_len) -> straight arm back to (-sx,0)
+        """
+        pts = []
+        arm_steps = max(2, int(arm_len / 0.05))
+        arc_steps = arc_segs
+
+        # Right straight arm: from (sx, 0) to (sx, -arm_len)
+        for i in range(arm_steps + 1):
+            t = i / arm_steps
+            pts.append(Vector((sx, -t * arm_len, z)))
+
+        # Semicircle: from (sx, -arm_len) clockwise to (-sx, -arm_len)
+        # Circle centre at (0, -arm_len), radius sx
+        # Right end: angle = 0  (cos0=1, sin0=0 -> x=sx, y=arc_cy)
+        # Left end:  angle = pi (cos pi=-1 -> x=-sx, y=arc_cy)
+        # Go clockwise = decreasing angle (0 -> -pi)
+        for i in range(1, arc_steps + 1):
+            a = -math.pi * i / arc_steps   # 0 to -pi
+            x = arc_cx + arc_r * math.cos(a)
+            y = arc_cy + arc_r * math.sin(a)
+            pts.append(Vector((x, y, z)))
+
+        # Left straight arm: from (-sx, -arm_len) back to (-sx, 0)
+        for i in range(1, arm_steps + 1):
+            t = i / arm_steps
+            pts.append(Vector((-sx, -(1.0 - t) * arm_len, z)))
+
+        return pts
+
+    # Hoop heights
+    hoop_zs = []
+    hz = cage_start_z
+    while hz <= total_height + 1e-5:
+        hoop_zs.append(hz)
+        hz += hoop_spacing
+    if not hoop_zs:
+        return
+
+    # Build hoops
+    for hz in hoop_zs:
+        pts = hoop_points(hz)
+        _make_arc_tube(bm, pts, cage_tube_r, segs)
+
+    # Vertical bars — evenly distributed across the ENTIRE hoop perimeter
+    # (both straight arms + arc). Index 0 = right stringer, last = left stringer.
+    # Example: 3 bars -> right stringer, arc midpoint, left stringer.
+    if len(hoop_zs) > 1 and bar_count > 0:
+        # Compute bar XY positions geometrically — independent of arc_segs/resolution.
+        # Path: right arm (sx,0)->(sx,-arm_len), arc, left arm (-sx,-arm_len)->(-sx,0)
+        # Total arc length (approximate): 2*arm_len + pi*sx
+        # Parameterise t in [0,1] over the full path, compute XY directly.
+        arm_l   = arm_len
+        arc_len = math.pi * sx
+        total_l = 2.0 * arm_l + arc_len
+
+        def bar_xy(t):
+            """Return (x, y) for parameter t in [0,1] along the hoop centreline."""
+            dist = t * total_l
+            if dist <= arm_l:
+                # Right arm: x=sx, y goes from 0 to -arm_len
+                frac = dist / arm_l if arm_l > 1e-6 else 0.0
+                return (sx, -frac * arm_l)
+            dist -= arm_l
+            if dist <= arc_len:
+                # Arc: from (sx, -arm_len) clockwise to (-sx, -arm_len)
+                a = -(math.pi * dist / arc_len)  # 0 to -pi
+                x = arc_cx + sx * math.cos(a)
+                y = arc_cy + sx * math.sin(a)
+                return (x, y)
+            dist -= arc_len
+            # Left arm: x=-sx, y goes from -arm_len to 0
+            frac = dist / arm_l if arm_l > 1e-6 else 1.0
+            return (-sx, -(1.0 - frac) * arm_l)
+
+        bar_positions = [bar_xy(b / (bar_count - 1)) if bar_count > 1 else bar_xy(0.5)
+                         for b in range(bar_count)]
+
+        for (bx, by) in bar_positions:
+            for k in range(len(hoop_zs) - 1):
+                p0 = Vector((bx, by, hoop_zs[k]))
+                p1 = Vector((bx, by, hoop_zs[k + 1]))
+                _make_tube(bm, p0, p1, cage_tube_r, segs)
+
+
+def _calc_expected_depth(params):
+    """
+    Calculate expected bounding box Y depth for the integrity check.
+    Coordinate system: Y = depth, cage goes into -Y, stringers sit at Y=0.
+
+    Without cage: bounding box Y = tube_diameter (just the stringer tube)
+    With cage:    front = +tube_r (front of stringer)
+                  back  = -(arm_len + arc_r + tube_r)
+                         = -(cage_depth + sx + tube_r)
+                  total = cage_depth + sx + 2 * tube_r
+    """
+    td = float(params['tube_diameter'])
+    if params.get('cage_enabled', False):
+        sx       = float(params['width']) / 2.0
+        arm_len  = float(params.get('cage_depth', 0.35))
+        arc_r    = sx   # arc radius equals half ladder width
+        total    = arm_len + arc_r + td   # front tube_r + back depth + back tube_r
+        return round(total, 4)
+    return round(td, 4)
+
 
 def _count_scene_ladders():
-    """Count DZ_Ladder objects in the current scene."""
+    """Count DZ_Ladder objects in the current scene, excluding Resolution LOD copies."""
     return sum(1 for o in bpy.data.objects
                if o.get('dgm_ladder') is True
-               and o.users_scene)
+               and o.users_scene
+               and '.LOD' not in o.name)
 
 def _is_active_ladder(obj):
-    """True if obj is a tracked ladder object."""
+    """True if obj is a tracked ladder object (not a LOD copy)."""
     return (obj is not None
             and obj.type == 'MESH'
-            and obj.get('dgm_ladder') is True)
+            and obj.get('dgm_ladder') is True
+            and '.LOD' not in obj.name)
 
 # ---------------------------------------------------------------------------
 #  Main operator — Type 1
@@ -225,6 +448,46 @@ class DGM_OT_ladder_type1(bpy.types.Operator):
         default=10, min=4, max=24,
     )
 
+    # ── Cage properties ───────────────────────────────────────────────────────
+    cage_enabled: bpy.props.BoolProperty(
+        name="Safety Cage",
+        description=(
+            "Add an industrial D-arc safety cage around the ladder.\n"
+            "The cage is a 180° semicircle behind the ladder, open at the front.\n"
+            "Cage is part of the same mesh object."
+        ),
+        default=False,
+    )
+    cage_start_z: bpy.props.FloatProperty(
+        name="Cage Start Height",
+        description=(
+            "Height above base where the cage begins.\n"
+            "Standard: 2200 mm — falls below this height are survivable."
+        ),
+        default=2.200, min=0.0, max=20.0, step=1, unit='LENGTH',
+    )
+    cage_depth: bpy.props.FloatProperty(
+        name="Cage Depth",
+        description=(
+            "How deep the cage extends behind the ladder — \n"
+            "essentially how much space a person has inside the cage.\n"
+            "The arc width is always tied to the ladder width.\n"
+            "Reference model: ~700 mm."
+        ),
+        default=0.700, min=0.100, max=2.000, step=1, unit='LENGTH',
+    )
+    hoop_spacing: bpy.props.FloatProperty(
+        name="Hoop Spacing",
+        description="Vertical distance between cage hoops. Standard: 900 mm.",
+        default=0.900, min=0.200, max=3.000, step=1, unit='LENGTH',
+    )
+    cage_bar_count: bpy.props.IntProperty(
+        name="Vertical Bars",
+        description="Number of vertical bars along the cage arc connecting hoops.",
+        default=5, min=0, max=12,
+    )
+
+
     def _get_params(self):
         return dict(
             width=self.width,
@@ -234,6 +497,12 @@ class DGM_OT_ladder_type1(bpy.types.Operator):
             ground_offset=self.ground_offset,
             top_extension=self.top_extension,
             resolution=self.resolution,
+            cage_enabled=self.cage_enabled,
+            cage_start_z=self.cage_start_z,
+            cage_depth=self.cage_depth,
+            hoop_spacing=self.hoop_spacing,
+            cage_bar_count=self.cage_bar_count,
+            cage_tube_d=self.tube_diameter,  # cage uses same tube diameter as ladder
         )
 
     def _rebuild(self, context):
@@ -245,12 +514,28 @@ class DGM_OT_ladder_type1(bpy.types.Operator):
         bm.to_mesh(obj.data)
         bm.free()
         obj.data.update()
-        obj['dgm_ladder_rungs']            = rung_count
-        obj['dgm_ladder_height']           = round(total_height, 4)
-        obj['dgm_ladder_expected_height']  = round(total_height, 4)
-        obj['dgm_ladder_expected_width']   = round(params['width'] + params['tube_diameter'], 4)
-        obj['dgm_ladder_expected_depth']   = round(params['tube_diameter'], 4)
-        # Always persist params so panel integrity check works from first creation
+        # Write display counters — but NOT dgm_p_* or confirmed flag
+        # so integrity check doesn't trigger during live preview
+        obj['dgm_ladder_rungs']  = rung_count
+        obj['dgm_ladder_height'] = round(total_height, 4)
+
+    def _commit(self, context):
+        """Write all stored params and expected dimensions — called only from execute()."""
+        obj = context.active_object
+        if obj is None or not obj.get('dgm_ladder'):
+            return
+        params = self._get_params()
+        _, rung_count, total_height = build_ladder_type1(params)
+        obj['dgm_ladder_rungs']           = rung_count
+        obj['dgm_ladder_height']          = round(total_height, 4)
+        obj['dgm_ladder_expected_height'] = round(total_height, 4)
+        obj['dgm_ladder_expected_width']  = round(params['width'] + params['tube_diameter'], 4)
+        obj['dgm_ladder_expected_depth']  = _calc_expected_depth(params)
+        obj['dgm_p_cage_enabled']  = params.get('cage_enabled',  False)
+        obj['dgm_p_cage_start_z']  = params.get('cage_start_z',  2.200)
+        obj['dgm_p_cage_depth']    = params.get('cage_depth',    0.350)
+        obj['dgm_p_hoop_spacing']  = params.get('hoop_spacing',  0.900)
+        obj['dgm_p_cage_bar_count']= params.get('cage_bar_count', 5)
         obj['dgm_p_width']         = params['width']
         obj['dgm_p_tube_diameter'] = params['tube_diameter']
         obj['dgm_p_rung_count']    = params['rung_count']
@@ -258,15 +543,19 @@ class DGM_OT_ladder_type1(bpy.types.Operator):
         obj['dgm_p_ground_offset'] = params['ground_offset']
         obj['dgm_p_top_extension'] = params['top_extension']
         obj['dgm_p_resolution']    = params['resolution']
+        obj['dgm_ladder_confirmed'] = True
 
     @classmethod
     def poll(cls, context):
         return _count_scene_ladders() < 3
 
+    _created_obj_name: str = ""   # track the object we created so cancel can delete it
+
     def invoke(self, context, event):
         # Always create a brand new ladder object — never reuse existing
-        # Name based on how many ladders already exist (1, 2, 3)
-        ladder_num = _count_scene_ladders() + 1
+        # Find the lowest unused DZ_Ladder_N name (1, 2, 3)
+        ladder_num = next(n for n in range(1, 4)
+                          if not bpy.data.objects.get('DZ_Ladder_{}'.format(n)))
         obj_name = "DZ_Ladder_{}".format(ladder_num)
         mesh = bpy.data.meshes.new(obj_name)
         obj  = bpy.data.objects.new(obj_name, mesh)
@@ -277,8 +566,19 @@ class DGM_OT_ladder_type1(bpy.types.Operator):
         obj.select_set(True)
         obj['dgm_ladder']      = True
         obj['dgm_ladder_type'] = 1
+        self._created_obj_name = obj_name
         self._rebuild(context)
         return context.window_manager.invoke_props_dialog(self, width=400)
+
+    def cancel(self, context):
+        """User pressed Escape or Cancel — delete the preview object."""
+        obj = bpy.data.objects.get(self._created_obj_name)
+        if obj is not None:
+            mesh = obj.data
+            bpy.data.objects.remove(obj, do_unlink=True)
+            if mesh.users == 0:
+                bpy.data.meshes.remove(mesh)
+        self._created_obj_name = ""
 
     def check(self, context):
         self._rebuild(context)
@@ -325,6 +625,29 @@ class DGM_OT_ladder_type1(bpy.types.Operator):
         icol.label(text="Last rung at:  {:.3f} m".format(last_rung_z))
         icol.label(text="Width:  {:.0f} mm".format(params['width'] * 1000))
 
+        # ── Safety Cage ──────────────────────────────────────────────────────
+        cage_box = layout.box()
+        cage_header = cage_box.row(align=True)
+        cage_text = "Remove Safety Cage" if self.cage_enabled else "Add Safety Cage"
+        cage_icon = 'X' if self.cage_enabled else 'ADD'
+        cage_header.prop(self, 'cage_enabled', text=cage_text, icon=cage_icon)
+        if self.cage_enabled:
+            ccol = cage_box.column(align=True)
+            ccol.prop(self, 'cage_start_z')
+            ccol.prop(self, 'cage_depth')
+            ccol.separator()
+            ccol.prop(self, 'hoop_spacing')
+            ccol.prop(self, 'cage_bar_count')
+            # Cage info
+            hoop_count = max(0, int((total_height - self.cage_start_z) / self.hoop_spacing) + 1)                          if self.cage_start_z < total_height else 0
+            ccol.separator()
+            info_row = ccol.row()
+            info_row.enabled = False
+            total_depth = self.cage_depth + params['width'] / 2.0
+            info_row.label(text="Hoops: {}  |  Total depth: {:.0f} mm".format(
+                hoop_count, total_depth * 1000),
+                icon='INFO')
+
         # Mesh quality — compact single row
         q_row = layout.row(align=True)
         q_row.label(text="Tube Segments:", icon='MESH_CIRCLE')
@@ -332,6 +655,7 @@ class DGM_OT_ladder_type1(bpy.types.Operator):
 
     def execute(self, context):
         self._rebuild(context)
+        self._commit(context)
         return {'FINISHED'}
 
 
@@ -403,6 +727,28 @@ class DGM_OT_ladder_edit(bpy.types.Operator):
         ),
         default=10, min=4, max=24)
 
+    # Cage bpy.props — required for Blender to show these in the dialog
+    cage_enabled: bpy.props.BoolProperty(
+        name="Safety Cage",
+        description="Enable D-arc safety cage around the ladder.",
+        default=False)
+    cage_start_z: bpy.props.FloatProperty(
+        name="Cage Start Height",
+        description="Height above base where cage begins.",
+        default=2.200, min=0.0, max=20.0, step=1, unit='LENGTH')
+    cage_depth: bpy.props.FloatProperty(
+        name="Cage Depth",
+        description="How far cage extends behind ladder.",
+        default=0.350, min=0.100, max=2.000, step=1, unit='LENGTH')
+    hoop_spacing: bpy.props.FloatProperty(
+        name="Hoop Spacing",
+        description="Vertical distance between cage hoops.",
+        default=0.900, min=0.200, max=3.000, step=1, unit='LENGTH')
+    cage_bar_count: bpy.props.IntProperty(
+        name="Vertical Bars",
+        description="Number of vertical bars along the cage.",
+        default=5, min=0, max=12)
+
     @classmethod
     def poll(cls, context):
         return _is_active_ladder(context.active_object)
@@ -416,6 +762,12 @@ class DGM_OT_ladder_edit(bpy.types.Operator):
             ground_offset=self.ground_offset,
             top_extension=self.top_extension,
             resolution=self.resolution,
+            cage_enabled=self.cage_enabled,
+            cage_start_z=self.cage_start_z,
+            cage_depth=self.cage_depth,
+            hoop_spacing=self.hoop_spacing,
+            cage_bar_count=self.cage_bar_count,
+            cage_tube_d=self.tube_diameter,  # cage uses same tube diameter as ladder
         )
 
     # Snapshot storage for cancel restoration
@@ -448,19 +800,20 @@ class DGM_OT_ladder_edit(bpy.types.Operator):
             # Only write expected_* and dgm_p_* on confirmed OK
             obj['dgm_ladder_expected_height'] = round(total_height, 4)
             obj['dgm_ladder_expected_width']  = round(params['width'] + params['tube_diameter'], 4)
-            obj['dgm_ladder_expected_depth']  = round(params['tube_diameter'], 4)
+            obj['dgm_ladder_expected_depth']  = _calc_expected_depth(params)
             obj['dgm_p_width']         = self.width
             obj['dgm_p_tube_diameter'] = self.tube_diameter
             obj['dgm_p_rung_count']    = self.rung_count
             obj['dgm_p_rung_spacing']  = self.rung_spacing
             obj['dgm_p_ground_offset'] = self.ground_offset
-            obj['dgm_p_top_extension']  = self.top_extension
-            obj['dgm_p_resolution']     = self.resolution
-            obj['dgm_p_cage_depth']     = self.cage_depth
-            obj['dgm_p_cage_bar_count'] = self.cage_bar_count
-            obj['dgm_p_hoop_spacing']   = self.hoop_spacing
-            obj['dgm_p_cage_start_z']   = self.cage_start_z
-            obj['dgm_p_cage_tube_d']    = self.cage_tube_d
+            obj['dgm_p_top_extension'] = self.top_extension
+            obj['dgm_p_resolution']    = self.resolution
+            obj['dgm_p_cage_enabled']  = self.cage_enabled
+            obj['dgm_p_cage_start_z']  = self.cage_start_z
+            obj['dgm_p_cage_depth']    = self.cage_depth
+            obj['dgm_p_hoop_spacing']  = self.hoop_spacing
+            obj['dgm_p_cage_bar_count']= self.cage_bar_count
+
 
     def _snapshot(self, obj):
         """Take a bmesh snapshot of the current mesh and ALL properties for cancel restoration."""
@@ -475,6 +828,11 @@ class DGM_OT_ladder_edit(bpy.types.Operator):
             ground_offset    = obj.get('dgm_p_ground_offset',        self.ground_offset),
             top_extension    = obj.get('dgm_p_top_extension',        self.top_extension),
             resolution       = obj.get('dgm_p_resolution',           self.resolution),
+            cage_enabled     = obj.get('dgm_p_cage_enabled',         False),
+            cage_start_z     = obj.get('dgm_p_cage_start_z',         2.200),
+            cage_depth       = obj.get('dgm_p_cage_depth',           0.350),
+            hoop_spacing     = obj.get('dgm_p_hoop_spacing',         0.900),
+            cage_bar_count   = obj.get('dgm_p_cage_bar_count',       5),
             rungs            = obj.get('dgm_ladder_rungs',           self.rung_count),
             height           = obj.get('dgm_ladder_height',          0.0),
             expected_height  = obj.get('dgm_ladder_expected_height', None),
@@ -497,6 +855,11 @@ class DGM_OT_ladder_edit(bpy.types.Operator):
         obj['dgm_p_ground_offset'] = p['ground_offset']
         obj['dgm_p_top_extension'] = p['top_extension']
         obj['dgm_p_resolution']    = p['resolution']
+        obj['dgm_p_cage_enabled']  = p.get('cage_enabled',  False)
+        obj['dgm_p_cage_start_z']  = p.get('cage_start_z',  2.200)
+        obj['dgm_p_cage_depth']    = p.get('cage_depth',    0.350)
+        obj['dgm_p_hoop_spacing']  = p.get('hoop_spacing',  0.900)
+        obj['dgm_p_cage_bar_count']= p.get('cage_bar_count',5)
         obj['dgm_ladder_rungs']    = p['rungs']
         obj['dgm_ladder_height']   = p['height']
         # Restore expected_* so the integrity check doesn't fire after cancel
@@ -522,11 +885,11 @@ class DGM_OT_ladder_edit(bpy.types.Operator):
         stored_rungs = obj.get('dgm_p_rung_count', None)
         self.rung_count = stored_rungs if stored_rungs is not None                           else obj.get('dgm_ladder_rungs', 16)
         # Load cage params if editing a Type 2
-        self.cage_depth      = obj.get('dgm_p_cage_depth',     0.700)
-        self.cage_bar_count  = obj.get('dgm_p_cage_bar_count', 4)
+        self.cage_enabled    = obj.get('dgm_p_cage_enabled',   False)
+        self.cage_start_z    = obj.get('dgm_p_cage_start_z',   2.200)
+        self.cage_depth      = obj.get('dgm_p_cage_depth',     0.350)
         self.hoop_spacing    = obj.get('dgm_p_hoop_spacing',   0.900)
-        self.cage_start_z    = obj.get('dgm_p_cage_start_z',   2.500)
-        self.cage_tube_d     = obj.get('dgm_p_cage_tube_d',    0.025)
+        self.cage_bar_count  = obj.get('dgm_p_cage_bar_count', 5)
         # Take snapshot BEFORE opening dialog so cancel can restore
         self._snapshot(obj)
         # Do NOT call _rebuild here — mesh stays untouched until user edits something
@@ -582,19 +945,18 @@ class DGM_OT_ladder_edit(bpy.types.Operator):
         icol.label(text="Last rung at:  {:.3f} m".format(last_rung_z))
         icol.label(text="Width:  {:.0f} mm".format(params['width'] * 1000))
 
-        # Show cage controls when editing Type 2
-        obj = context.active_object
-        if obj and obj.get('dgm_ladder_type') == 2:
-            cage_box = layout.box()
-            cage_box.label(text="Cage Settings", icon='MESH_CIRCLE')
+        # Safety cage section
+        cage_box = layout.box()
+        cage_text = "Remove Safety Cage" if self.cage_enabled else "Add Safety Cage"
+        cage_icon = 'X' if self.cage_enabled else 'ADD'
+        cage_box.prop(self, 'cage_enabled', text=cage_text, icon=cage_icon)
+        if self.cage_enabled:
             ccol = cage_box.column(align=True)
+            ccol.prop(self, 'cage_start_z')
             ccol.prop(self, 'cage_depth')
-            ccol.prop(self, 'cage_tube_d')
             ccol.separator()
             ccol.prop(self, 'hoop_spacing')
             ccol.prop(self, 'cage_bar_count')
-            ccol.separator()
-            ccol.prop(self, 'cage_start_z')
 
         q_row = layout.row(align=True)
         q_row.label(text="Tube Segments:", icon='MESH_CIRCLE')
@@ -690,7 +1052,8 @@ class DGM_OT_ladder_restore(bpy.types.Operator):
         # Reset scale so mesh dimensions match the stored values exactly
         obj.scale = (1.0, 1.0, 1.0)
 
-        # Rebuild mesh from stored params (generates local-space geometry)
+        # Rebuild mesh from stored params — including cage if it was enabled
+        cage_enabled = obj.get('dgm_p_cage_enabled', False)
         params = dict(
             width         = obj.get('dgm_p_width',         0.440),
             tube_diameter = obj.get('dgm_p_tube_diameter', TUBE_DIAMETER_STD),
@@ -699,6 +1062,12 @@ class DGM_OT_ladder_restore(bpy.types.Operator):
             ground_offset = obj.get('dgm_p_ground_offset', GROUND_OFFSET_STD),
             top_extension = obj.get('dgm_p_top_extension', TOP_EXT_STD),
             resolution    = obj.get('dgm_p_resolution',    10),
+            cage_enabled  = cage_enabled,
+            cage_start_z  = obj.get('dgm_p_cage_start_z',  2.200),
+            cage_depth    = obj.get('dgm_p_cage_depth',    0.350),
+            hoop_spacing  = obj.get('dgm_p_hoop_spacing',  0.900),
+            cage_bar_count= obj.get('dgm_p_cage_bar_count',5),
+            cage_tube_d   = obj.get('dgm_p_tube_diameter', TUBE_DIAMETER_STD),
         )
 
         bm, rung_count, total_height = build_ladder_type1(params)
@@ -707,15 +1076,15 @@ class DGM_OT_ladder_restore(bpy.types.Operator):
         obj.data.update()
 
         # Restore position and rotation — only scale stays at 1,1,1
-        obj.location      = saved_location
+        obj.location       = saved_location
         obj.rotation_euler = saved_rotation
 
-        # Refresh stored dimensions
+        # Refresh stored dimensions (same logic as _rebuild)
         obj['dgm_ladder_rungs']           = rung_count
         obj['dgm_ladder_height']          = round(total_height, 4)
         obj['dgm_ladder_expected_height'] = round(total_height, 4)
         obj['dgm_ladder_expected_width']  = round(params['width'] + params['tube_diameter'], 4)
-        obj['dgm_ladder_expected_depth']  = round(params['tube_diameter'], 4)
+        obj['dgm_ladder_expected_depth']  = _calc_expected_depth(params)
 
         self.report({'INFO'}, "Ladder restored to {:.3f} m".format(total_height))
         return {'FINISHED'}
@@ -730,7 +1099,16 @@ def draw_ladder_generator_section(layout, context):
     is_ladder = _is_active_ladder(obj)
 
     box = layout.box()
-    box.label(text="Ladder Generator", icon='MESH_CYLINDER')
+    # Collapsible header
+    scene = context.scene
+    header = box.row(align=True)
+    header.prop(scene, "dgm_show_ladder_gen",
+                icon='TRIA_DOWN' if scene.dgm_show_ladder_gen else 'TRIA_RIGHT',
+                emboss=False, text="")
+    header.label(text="Ladder Generator", icon='MESH_CYLINDER')
+
+    if not scene.dgm_show_ladder_gen:
+        return
 
     # Add Ladder button + counter
     ladder_count = _count_scene_ladders()
@@ -791,30 +1169,63 @@ def draw_ladder_generator_section(layout, context):
                 text="Generate Collision", icon='MESH_CUBE')
 
         # Geometry integrity check — detect scale, manual mesh edits, Apply Scale, etc.
-        expected_h = obj.get('dgm_ladder_expected_height', None)
-        if expected_h is not None:
+        # Only active after object is confirmed (OK pressed at least once).
+        # Consider confirmed if explicitly flagged OR if params were ever saved
+        # Only trust confirmed flag or dgm_p_width (written only in execute/_commit)
+        # Never use dgm_ladder_rungs — it's written during live preview too
+        _is_confirmed = (obj.get('dgm_ladder_confirmed', False)
+                         or obj.get('dgm_p_width') is not None)
+        if _is_confirmed:
             import mathutils as _mu
-            world_corners = [obj.matrix_world @ _mu.Vector(c) for c in obj.bound_box]
-            xs = [c.x for c in world_corners]
-            ys = [c.y for c in world_corners]
-            zs = [c.z for c in world_corners]
-            actual_h = max(zs) - min(zs)
-            actual_w = max(xs) - min(xs)
-            actual_d = max(ys) - min(ys)
 
-            expected_w = obj.get('dgm_ladder_expected_width', None)
-            expected_d = obj.get('dgm_ladder_expected_depth', None)
+            # Check 1: scale must be (1,1,1)
+            sx_scale, sy_scale, sz_scale = obj.scale
+            scale_ok = (abs(sx_scale - 1.0) < 1e-4
+                        and abs(sy_scale - 1.0) < 1e-4
+                        and abs(sz_scale - 1.0) < 1e-4)
+
+            # Check 2: recalculate expected from stored params and compare bounding box
+            _p = dict(
+                width         = obj.get('dgm_p_width',         0.440),
+                tube_diameter = obj.get('dgm_p_tube_diameter', 0.042),
+                rung_count    = obj.get('dgm_p_rung_count',    16),
+                rung_spacing  = obj.get('dgm_p_rung_spacing',  0.320),
+                ground_offset = obj.get('dgm_p_ground_offset', 0.340),
+                top_extension = obj.get('dgm_p_top_extension', 0.700),
+                resolution    = obj.get('dgm_p_resolution',    8),
+                cage_enabled  = obj.get('dgm_p_cage_enabled',  False),
+                cage_depth    = obj.get('dgm_p_cage_depth',    0.350),
+                cage_tube_d   = obj.get('dgm_p_tube_diameter', 0.042),
+            )
+            # Use local bounding box (no matrix_world) so scale is detected separately
+            local_corners = [_mu.Vector(c) for c in obj.bound_box]
+            lxs = [c.x for c in local_corners]
+            lys = [c.y for c in local_corners]
+            lzs = [c.z for c in local_corners]
+            actual_h = max(lzs) - min(lzs)
+            actual_w = max(lxs) - min(lxs)
+            actual_d = max(lys) - min(lys)
+
+            _, _, _total_h = build_ladder_type1(_p)
+            expected_h = round(_total_h, 4)
+            expected_w = round(_p['width'] + _p['tube_diameter'], 4)
+            expected_d = _calc_expected_depth(_p)
 
             TOL = 0.005  # 5 mm tolerance
             height_ok = abs(actual_h - expected_h) < TOL
-            width_ok  = expected_w is None or abs(actual_w - expected_w) < TOL
-            depth_ok  = expected_d is None or abs(actual_d - expected_d) < TOL
+            width_ok  = abs(actual_w - expected_w) < TOL
+            depth_ok  = abs(actual_d - expected_d) < TOL
 
-            if not height_ok or not width_ok or not depth_ok:
+            if not scale_ok or not (height_ok and width_ok and depth_ok):
                 warn = box.box()
                 warn.alert = True
                 wcol = warn.column(align=True)
                 wcol.label(text="Ladder geometry was modified!", icon='ERROR')
+                if not scale_ok:
+                    wcol.label(
+                        text="Scale: X={:.3f} Y={:.3f} Z={:.3f}  (must be 1,1,1)".format(
+                            sx_scale, sy_scale, sz_scale),
+                        icon='DOT')
                 if not height_ok:
                     wcol.label(
                         text="Height: {:.3f} m  (expected {:.3f} m)".format(
@@ -852,11 +1263,14 @@ ladder_classes = (
 def register():
     for cls in ladder_classes:
         bpy.utils.register_class(cls)
+    bpy.types.Scene.dgm_show_ladder_gen = bpy.props.BoolProperty(
+        name="Show Ladder Generator", default=False)
 
 
 def unregister():
     for cls in reversed(ladder_classes):
         bpy.utils.unregister_class(cls)
+    del bpy.types.Scene.dgm_show_ladder_gen
 
 
 if __name__ == "__main__":

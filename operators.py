@@ -1117,6 +1117,7 @@ class DGM_PT_generators(bpy.types.Panel):
     bl_region_type = 'UI'
     bl_category = "DayZ"
     bl_order = 10
+    bl_options = {'DEFAULT_CLOSED'}
 
     def draw(self, context):
         layout = self.layout
@@ -1623,7 +1624,13 @@ class DGM_OT_memory_add_ladder_n(bpy.types.Operator):
     ladder_idx: bpy.props.IntProperty(default=1, min=1, max=3)
 
     def execute(self, context):
-        if not context.scene.dgm_target_object:
+        # Auto-select the matching DZ_Ladder_N object for this slot if it exists
+        # This prevents accidentally spawning memory on the wrong ladder when
+        # multiple ladders are in the scene.
+        matching_ladder = bpy.data.objects.get("DZ_Ladder_{}".format(self.ladder_idx))
+        if matching_ladder is not None and matching_ladder.get('dgm_ladder'):
+            context.scene.dgm_target_object = matching_ladder
+        elif not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
         # Enforce sequential order — previous ladder must exist first

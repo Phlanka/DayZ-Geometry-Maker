@@ -815,11 +815,18 @@ def create_ladder_collision(ladder_obj, mass_per_stringer=20.0):
 
     sx_local = width / 2.0
 
-    # World-space ladder position
-    wc       = [ladder_obj.matrix_world @ mathutils.Vector(c) for c in ladder_obj.bound_box]
+    # World-space ladder position — use matrix_world to transform local stringer centres
+    # This handles translation, rotation and scale correctly.
+    mw = ladder_obj.matrix_world
+    # Left and right stringer world positions (local X=±sx, Y=0, Z=0)
+    origin_world  = mw @ mathutils.Vector((0.0,        0.0, 0.0))
+    right_stringer = mw @ mathutils.Vector(( sx_local,  0.0, 0.0))
+    left_stringer  = mw @ mathutils.Vector((-sx_local,  0.0, 0.0))
+
+    wc       = [mw @ mathutils.Vector(c) for c in ladder_obj.bound_box]
     base_z   = min(c.z for c in wc)
-    cx_world = sum(c.x for c in wc) / 8.0
-    cy_world = sum(c.y for c in wc) / 8.0
+    cx_world = origin_world.x   # X centre of ladder (at origin)
+    cy_world = origin_world.y   # Y = stringer plane, not bbox centre
 
     geo = _get_or_create_geometry_object()
 
@@ -877,9 +884,9 @@ def create_ladder_collision(ladder_obj, mass_per_stringer=20.0):
 
     new_comps   = []
     vert_ranges = []
-    for comp_name, stringer_lx in zip(comp_names, (-sx_local, sx_local)):
-        cx = cx_world + stringer_lx
-        cy = cy_world
+    for comp_name, stringer_world_pos in zip(comp_names, (left_stringer, right_stringer)):
+        cx = stringer_world_pos.x
+        cy = stringer_world_pos.y
 
         base_idx  = len(bm.verts)
         new_verts = [bm.verts.new(mathutils.Vector(co))
@@ -986,6 +993,11 @@ def add_memory_ladder(ladder_idx=1):
     actual_last_rung  = ground_offset + (rung_count - 1) * rung_spacing
 
     # Fixed Z offsets per vertex index (from P3D asset analysis)
+    # Y position = stringer plane (local Y=0), not bbox centre
+    _tgt = bpy.context.scene.dgm_target_object
+    _stringer_cy = (_tgt.matrix_world @ mathutils.Vector((0.0, 0.0, 0.0))).y \
+                   if _tgt is not None else 0.0
+
     VERT_Z_OFFSETS = [
         actual_first_rung - 0.021,   # 0
         actual_first_rung + 0.000,   # 1
@@ -999,9 +1011,10 @@ def add_memory_ladder(ladder_idx=1):
     mem.data.vertices.add(len(verts))
     for i, co in enumerate(verts):
         z = target_min_z + VERT_Z_OFFSETS[i] if i < len(VERT_Z_OFFSETS)             else target_min_z + actual_last_rung
+        # Rotate 180° around Z so memory faces the ladder front (cage is behind)
         mem.data.vertices[base + i].co = mathutils.Vector((
-            co[0] + target_cx,
-            co[1] + target_cy,
+            -co[0] + target_cx,
+            -co[1] + _stringer_cy,
             z,
         ))
     mem.data.update()
@@ -1133,8 +1146,9 @@ def create_view_geometry_ladder(ladder_idx=1):
             world_corners = [target_obj.matrix_world @ mathutils.Vector(c)
                              for c in target_obj.bound_box]
             target_cx    = sum(c.x for c in world_corners) / 8.0
-            target_cy    = sum(c.y for c in world_corners) / 8.0
             target_min_z = min(c.z for c in world_corners)
+            # Use stringer Y (local Y=0) — cage shifts the bounding box centre
+            target_cy    = (target_obj.matrix_world @ mathutils.Vector((0.0, 0.0, 0.0))).y
         else:
             target_cx, target_cy, target_min_z = 0.0, 0.0, 0.0
         # Scale view geometry Z to match actual last_rung_z.
