@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+### Changed
+- **Auto-apply transforms** — when any geometry, LOD, shadow volume, memory point, or view geometry button is clicked, the addon now automatically applies location, rotation and scale to the target object if they haven't been applied already. A warning message is shown in the viewport so the user knows it happened. This prevents floating or misaligned LODs caused by unapplied transforms.
+
 ### Added
 - **Model Generator panel** — new standalone *DayZ Object Generator* panel in the N-panel, positioned between *DayZ Object Properties* and *DayZ Geometry Maker*. Designed to hold procedural model generators; more will be added over time.
 - **Ladder Generator** — procedural DayZ ladder generator inside the Model Generator panel.
