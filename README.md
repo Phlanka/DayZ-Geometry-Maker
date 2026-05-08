@@ -17,7 +17,29 @@ Built and maintained by [Phlanka](https://phlanka.com).
 - **Named Selections** — Synced from vertex groups, with hidden selection export names
 - **model.cfg generation** — Writes a CfgModels / CfgSkeletons config alongside the P3D
 - **Correct normals** — Deduplicated split normals written with proper Arma axis mapping — no F5 needed in Object Builder
+- **Model Generator** — procedural ladder and cabin generators built to DayZ standards, with live preview, collision generation, and integrity checks
 - **Texture Baker integration** — Optional integration with [DayZ Texture Tools](https://beta.phlanka.com/) to bake and assign textures at export time
+- **Model Generator** — Procedural model generation directly in Blender, no manual mesh building required
+
+---
+
+## Model Generator
+
+The **DayZ Object Generator** panel (above the main panel in the N-panel) lets you generate game-ready DayZ models procedurally.
+
+### Ladder Generator
+
+Generate a correctly dimensioned DayZ ladder with one click. All dimensions match DayZ animation requirements out of the box.
+
+- Correct rung spacing (320 mm), first rung height (340 mm) and tube diameter (42 mm)
+- Adjustable rung count, width (440 / 480 mm), top extension and tube segments
+- Live viewport preview — every parameter change rebuilds the mesh instantly
+- Automatic geometry integrity check — warns if the mesh was manually edited or scaled
+- One-click collision generation (two stringer boxes, configurable mass)
+- Memory points and View Geometry placed and scaled automatically to match ladder height
+- Maximum 3 ladders per scene (DayZ engine limit), enforced in the UI
+
+> More generators (wall brackets, cage ladders, etc.) will be added in future updates.
 
 ---
 
@@ -85,6 +107,19 @@ This project is licensed under the **GNU General Public License v3.0** with addi
 - **You may not sell** this addon or any derivative as a standalone or bundled product
 - Any derivative work must be released as open source under the same license
 - See [LICENSE](LICENSE) for full terms
+
+---
+
+## Contributors
+
+A huge thank you to everyone who has contributed code, fixes and features to this project.
+
+| Contributor | Contributions |
+|---|---|
+| [Phlanka](https://github.com/Phlanka) | Creator & maintainer — core addon, P3D exporter, memory LOD, updater, named selections |
+| [7ooWORKS](https://github.com/7ooWORKS) | Ladder Generator, Safety Cage, Cabin Generator, multi-ladder support, collision generation, ladder integrity checks, numerous bug fixes |
+
+Want to contribute? Check out [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
 
 ---
 

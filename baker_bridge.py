@@ -602,3 +602,4 @@ def run_baker_and_assign(operator, objects: list, model_name: str, p3d_filepath:
     bpy.app.timers.register(_tick, first_interval=0.1)
     operator.report({'INFO'}, "Baking {} selection(s) individually...".format(len(sel_entries)))
     return True
+    

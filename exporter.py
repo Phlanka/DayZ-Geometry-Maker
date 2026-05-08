@@ -296,7 +296,7 @@ def _write_named_selections(f, obj, mesh):
         groups = set(grp.group for v in face.vertices for grp in mesh.vertices[v].groups)
         for gi in groups:
             weights = [grp.weight > 0 for v in face.vertices for grp in mesh.vertices[v].groups if grp.group == gi]
-            if len(weights) == len(face.vertices):
+            if all(weights) and len(weights) == len(face.vertices):
                 name = obj.vertex_groups[gi].name
                 selections_face[name].add(face.index)
 
@@ -965,7 +965,7 @@ class DGM_OT_export_p3d(bpy.types.Operator):
             merge_same_lod=True,
             renumber_components=True,
             apply_transforms=True,
-            write_model_cfg_file=True,
+            write_model_cfg_file=getattr(scene, "dgm_write_model_cfg", True),
         )
 
         if 'FINISHED' not in result:

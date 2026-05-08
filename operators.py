@@ -4,7 +4,7 @@ DayZ Geometry Maker - Operators and Panel
 
 import bpy
 import math
-from . import geometry, updater, baker_bridge
+from . import geometry, updater, baker_bridge, ladder_generator, cabin_generator
 
 
 # ---------------------------------------------------------------------------
@@ -739,6 +739,7 @@ class DGM_PT_object_props(bpy.types.Panel):
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "DayZ"
+    bl_order = 0
     bl_options = {'DEFAULT_CLOSED'}
 
     @classmethod
@@ -1107,12 +1108,45 @@ def _draw_named_selections_content(layout, context):
 # Main Panel
 # ---------------------------------------------------------------------------
 
+
+
+class DGM_PT_generators(bpy.types.Panel):
+    bl_label = "DayZ Object Generator"
+    bl_idname = "DGM_PT_generators"
+    bl_space_type = 'VIEW_3D'
+    bl_region_type = 'UI'
+    bl_category = "DayZ"
+    bl_order = 10
+    bl_options = {'DEFAULT_CLOSED'}
+
+    def draw(self, context):
+        layout = self.layout
+        scene = context.scene
+
+        def _gen_section(prop, label, icon):
+            box = layout.box()
+            row = box.row()
+            is_open = getattr(scene, prop, False)
+            op = row.operator("dgm.toggle_section", text=label,
+                              icon='TRIA_DOWN' if is_open else 'TRIA_RIGHT')
+            op.prop = prop
+            return box, is_open
+
+        box, is_open = _gen_section("dgm_show_ladder_gen", "Ladder Generator", 'MESH_CYLINDER')
+        if is_open:
+            ladder_generator.draw_ladder_generator_section(box, context)
+
+        box, is_open = _gen_section("dgm_show_cabin_gen", "Cabin Generator", 'HOME')
+        if is_open:
+            cabin_generator.draw_cabin_generator_section(box, context)
+
 class DGM_PT_main_panel(bpy.types.Panel):
     bl_label = "DayZ Geometry Maker"
     bl_idname = "DGM_PT_main_panel"
     bl_space_type = 'VIEW_3D'
     bl_region_type = 'UI'
     bl_category = "DayZ"
+    bl_order = 20
 
     def draw(self, context):
         layout = self.layout
@@ -1155,6 +1189,7 @@ class DGM_PT_main_panel(bpy.types.Panel):
             col.operator("dgm.create_view_geometry",           text="View Geometry (6e15)")
             col.operator("dgm.create_fire_geometry",           text="Fire Geometry (7e15)")
             box.operator("dgm.create_shadow_volumes",          text="Shadow Volumes (1e4 + 1.001e4)")
+
 
         # ---- Interior Views ----
         box, is_open = _section_header("dgm_show_interior", "Interior View LODs")
@@ -1255,7 +1290,46 @@ class DGM_PT_main_panel(bpy.types.Panel):
 
             sub = box.box()
             sub.label(text="Building & Structure", icon='MOD_BUILD')
-            _mem_group(sub, "Ladder", "dgm.memory_add_ladder", ['ladder1', 'ladder1_bottom_front', 'ladder1_con', 'ladder1_con_dir', 'ladder1_dir', 'ladder1_top_front'])
+
+            # Ladders — always show all 3 slots
+            sub_hrow = sub.row(align=True)
+            sub_hrow.label(text="", icon='KEYFRAME')
+            sub_hrow.label(text="Ladders")
+
+            for li in range(1, 4):
+                prefix = "ladder{}".format(li)
+                lad_points = [
+                    prefix,
+                    prefix + '_bottom_front',
+                    prefix + '_con',
+                    prefix + '_con_dir',
+                    prefix + '_dir',
+                    prefix + '_top_front',
+                ]
+                lad_exists = any(geometry.memory_point_exists(n) for n in lad_points)
+
+                lrow = sub.row(align=True)
+                lrow.separator(factor=2.0)
+                dot_icon = 'KEYFRAME_HLT' if lad_exists else 'KEYFRAME'
+                lrow.label(text="", icon=dot_icon)
+                lrow.label(text="Ladder {}".format(li))
+                if lad_exists:
+                    rot_op = lrow.operator("dgm.memory_rotate_ladder", text="", icon='LOOP_FORWARDS')
+                    rot_op.ladder_idx = li
+                    del_op = lrow.operator("dgm.memory_delete_ladder", text="", icon='X')
+                    del_op.ladder_idx = li
+                else:
+                    add_op = lrow.operator("dgm.memory_add_ladder_n", text="Add")
+                    add_op.ladder_idx = li
+
+                if lad_exists:
+                    for pt in lad_points:
+                        if not geometry.memory_point_exists(pt):
+                            continue
+                        sub_row = sub.row(align=True)
+                        sub_row.separator(factor=3.0)
+                        sub_row.label(text=pt, icon='DOT')
+                        _move_btn(sub_row, pt)
 
             def _door_groups(count):
                 return [
@@ -1409,6 +1483,7 @@ class DGM_PT_main_panel(bpy.types.Panel):
                     col.prop(scene, "dgm_scripts_path", text="Scripts")
 
             col.separator()
+            col.prop(scene, "dgm_write_model_cfg")
             col.operator("dgm.export_p3d", text="Export", icon='EXPORT')
             box.separator()
             box.operator("dgm.check_update", text="Check for Updates", icon='URL')
@@ -1432,6 +1507,9 @@ def register_scene_props():
 
     # Collapsible section toggles — all closed by default
     S.dgm_show_selections  = bpy.props.BoolProperty(default=False)
+    S.dgm_show_generators  = bpy.props.BoolProperty(default=False)
+    S.dgm_show_ladder_gen  = bpy.props.BoolProperty(default=False)
+    S.dgm_show_cabin_gen   = bpy.props.BoolProperty(default=False)
     S.dgm_show_collision   = bpy.props.BoolProperty(default=False)
     S.dgm_show_interior    = bpy.props.BoolProperty(default=False)
     S.dgm_show_terrain     = bpy.props.BoolProperty(default=False)
@@ -1448,8 +1526,9 @@ def register_scene_props():
     )
 
     # Memory point counts
-    S.dgm_memory_doors_count  = bpy.props.IntProperty(name="Doors",  default=1, min=1, max=8)
-    S.dgm_memory_lights_count = bpy.props.IntProperty(name="Lights", default=1, min=1, max=8)
+    S.dgm_memory_doors_count  = bpy.props.IntProperty(name="Doors",   default=1, min=1, max=8)
+    S.dgm_memory_lights_count = bpy.props.IntProperty(name="Lights",  default=1, min=1, max=8)
+    S.dgm_memory_ladders_count = bpy.props.IntProperty(name="Ladders", default=1, min=1, max=3)
 
     # Active move point name — empty string means none active
     S.dgm_moving_memory_point = bpy.props.StringProperty(name="Moving Memory Point", default="")
@@ -1478,13 +1557,16 @@ def register_scene_props():
 
     # Export paths
     S.dgm_p3d_path = bpy.props.StringProperty(
-        name="P3D", subtype='NONE', default=""
+        name="P3D", subtype='NONE', default="",
+        description="Set P3D save path — click the folder icon to browse",
     )
     S.dgm_textures_path = bpy.props.StringProperty(
-        name="Textures", subtype='DIR_PATH', default=""
+        name="Textures", subtype='DIR_PATH', default="",
+        description="Select folder for exported textures",
     )
     S.dgm_scripts_path = bpy.props.StringProperty(
-        name="Scripts", subtype='DIR_PATH', default=""
+        name="Scripts", subtype='DIR_PATH', default="",
+        description="Select folder for exported scripts",
     )
     S.dgm_config_template = bpy.props.EnumProperty(
         name="Config Template",
@@ -1495,6 +1577,11 @@ def register_scene_props():
             ('house_no_destruct',"House (Static Obj)","Static world object — inherits HouseNoDestruct"),
         ],
         default='container_base',
+    )
+    S.dgm_write_model_cfg = bpy.props.BoolProperty(
+        name="Generate model.cfg",
+        description="Write a model.cfg file alongside the P3D on export",
+        default=True,
     )
 
     # Resolution LOD toggles + view distances (real game meters per wiki guidance)
@@ -1514,13 +1601,14 @@ def unregister_scene_props():
     props = [
         "dgm_target_object",
         "dgm_pending_selection",
-        "dgm_show_selections", "dgm_show_collision", "dgm_show_interior", "dgm_show_terrain",
+        "dgm_show_selections", "dgm_show_generators", "dgm_show_ladder_gen", "dgm_show_cabin_gen", "dgm_show_collision", "dgm_show_interior", "dgm_show_terrain",
         "dgm_show_memory", "dgm_show_lods", "dgm_show_export", "dgm_cta_baking_open",
         "dgm_fire_quality",
-        "dgm_memory_doors_count", "dgm_memory_lights_count",
+        "dgm_memory_doors_count", "dgm_memory_lights_count", "dgm_memory_ladders_count",
         "dgm_moving_memory_point",
         "dgm_door_pose_active", "dgm_door_pose_active_idx",
         "dgm_p3d_path", "dgm_textures_path", "dgm_scripts_path", "dgm_config_template",
+        "dgm_write_model_cfg",
     ]
     for _di in range(1, 9):
         props += [
@@ -1539,6 +1627,136 @@ def unregister_scene_props():
                 delattr(S, p)
             except Exception:
                 pass
+
+
+# ---------------------------------------------------------------------------
+# Ladder — per-index add and rotate operators
+# ---------------------------------------------------------------------------
+
+class DGM_OT_memory_add_ladder_n(bpy.types.Operator):
+    """Add a ladder group with a specific index (ladder1, ladder2, ladder3)."""
+    bl_idname = "dgm.memory_add_ladder_n"
+    bl_label = "Add Ladder"
+    bl_description = "Add memory points and view geometry for this ladder slot"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    ladder_idx: bpy.props.IntProperty(default=1, min=1, max=3)
+
+    def execute(self, context):
+        # Auto-select the matching DZ_Ladder_N object for this slot if it exists
+        # This prevents accidentally spawning memory on the wrong ladder when
+        # multiple ladders are in the scene.
+        matching_ladder = bpy.data.objects.get("DZ_Ladder_{}".format(self.ladder_idx))
+        if matching_ladder is not None and matching_ladder.get('dgm_ladder'):
+            context.scene.dgm_target_object = matching_ladder
+        elif not context.scene.dgm_target_object:
+            self.report({'ERROR'}, "Select a target object first")
+            return {'CANCELLED'}
+        # Enforce sequential order — previous ladder must exist first
+        if self.ladder_idx > 1:
+            prev_prefix = "ladder{}".format(self.ladder_idx - 1)
+            if not geometry.memory_point_exists(prev_prefix):
+                self.report({'ERROR'},
+                    "Add Ladder {} first".format(self.ladder_idx - 1))
+                return {'CANCELLED'}
+        geometry.add_memory_ladder(ladder_idx=self.ladder_idx)
+        return {'FINISHED'}
+
+
+class DGM_OT_memory_delete_ladder(bpy.types.Operator):
+    """Delete all memory points of a ladder group."""
+    bl_idname = "dgm.memory_delete_ladder"
+    bl_label = "Delete Ladder"
+    bl_description = "Remove all memory points and view geometry for this ladder group"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    ladder_idx: bpy.props.IntProperty(default=1, min=1, max=3)
+
+    def execute(self, context):
+        # Enforce sequential order — cannot delete if a higher ladder exists
+        if self.ladder_idx < 3:
+            next_prefix = "ladder{}".format(self.ladder_idx + 1)
+            if geometry.memory_point_exists(next_prefix):
+                self.report({'ERROR'},
+                    "Delete Ladder {} first".format(self.ladder_idx + 1))
+                return {'CANCELLED'}
+        geometry.remove_memory_ladder(ladder_idx=self.ladder_idx)
+        # Keep the count spinner in sync
+        scene = context.scene
+        if scene.dgm_memory_ladders_count > self.ladder_idx - 1:
+            scene.dgm_memory_ladders_count = max(1, self.ladder_idx - 1)
+        self.report({'INFO'}, "Ladder {} deleted".format(self.ladder_idx))
+        return {'FINISHED'}
+
+
+class DGM_OT_memory_rotate_ladder(bpy.types.Operator):
+    """Rotate all memory points of a ladder group by 90° around Z."""
+    bl_idname = "dgm.memory_rotate_ladder"
+    bl_label = "Rotate Ladder 90°"
+    bl_description = "Rotate this ladder group 90° around the Z axis"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    ladder_idx: bpy.props.IntProperty(default=1, min=1, max=3)
+
+    def execute(self, context):
+        import math
+        import mathutils
+
+        prefix = "ladder{}".format(self.ladder_idx)
+        point_names = [
+            prefix,
+            prefix + '_bottom_front',
+            prefix + '_con',
+            prefix + '_con_dir',
+            prefix + '_dir',
+            prefix + '_top_front',
+        ]
+
+        mem = geometry.get_memory_object()
+        if not mem:
+            self.report({'ERROR'}, "No Memory LOD found")
+            return {'CANCELLED'}
+
+        rot = mathutils.Matrix.Rotation(math.radians(90), 4, 'Z')
+
+        verts_to_rotate = set()
+        for name in point_names:
+            vg = mem.vertex_groups.get(name)
+            if not vg:
+                continue
+            for v in mem.data.vertices:
+                for g in v.groups:
+                    if g.group == vg.index:
+                        verts_to_rotate.add(v.index)
+
+        if not verts_to_rotate:
+            self.report({'WARNING'}, "No ladder{} points found".format(self.ladder_idx))
+            return {'CANCELLED'}
+
+        # Compute the centre (X, Y) of the ladder's own vertices — rotate around that,
+        # not around world origin.
+        coords = [mem.data.vertices[vi].co.copy() for vi in verts_to_rotate]
+        cx = sum(c.x for c in coords) / len(coords)
+        cy = sum(c.y for c in coords) / len(coords)
+        pivot = mathutils.Vector((cx, cy, 0.0))
+
+        for vi in verts_to_rotate:
+            co = mem.data.vertices[vi].co.copy()
+            co -= pivot          # translate to pivot
+            co  = rot @ co       # rotate around Z
+            co += pivot          # translate back
+            mem.data.vertices[vi].co = co
+
+        mem.data.update()
+
+        # Rotate the View Geometry object around its own location (already correct)
+        vg_obj_name = "View Geometry.ladder{}".format(self.ladder_idx)
+        vg_obj = bpy.data.objects.get(vg_obj_name)
+        if vg_obj:
+            vg_obj.rotation_euler.z += math.radians(90)
+
+        self.report({'INFO'}, "Ladder {} rotated 90°".format(self.ladder_idx))
+        return {'FINISHED'}
 
 
 operator_classes = (
@@ -1579,7 +1797,11 @@ operator_classes = (
     DGM_OT_add_selection,
     DGM_OT_remove_selection,
     DGM_OT_bake_selections,
+    DGM_OT_memory_add_ladder_n,
+    DGM_OT_memory_delete_ladder,
+    DGM_OT_memory_rotate_ladder,
     DGM_PT_object_props,
+    DGM_PT_generators,
     DGM_PT_main_panel,
 )
 
@@ -1587,10 +1809,14 @@ operator_classes = (
 def register():
     for cls in operator_classes:
         bpy.utils.register_class(cls)
+    ladder_generator.register()
+    cabin_generator.register()
     register_scene_props()
 
 
 def unregister():
     unregister_scene_props()
+    ladder_generator.unregister()
+    cabin_generator.unregister()
     for cls in reversed(operator_classes):
         bpy.utils.unregister_class(cls)

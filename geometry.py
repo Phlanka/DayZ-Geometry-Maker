@@ -325,40 +325,6 @@ def create_view_geometry():
     move_to_collection(obj, "View Geometry")
     return obj
 
-# ---------------------------------------------------------------------------
-# View Geometry LOD for LADDER
-# ---------------------------------------------------------------------------
-
-def create_view_geometry_ladder():
-    original_obj = bpy.context.scene.dgm_target_object
-    if not original_obj or original_obj.type != 'MESH':
-        return None
-
-    min_x, max_x, min_y, max_y, min_z, max_z = get_bbox(original_obj)
-    cx = (max_x + min_x) / 2
-    cy = (max_y + min_y) / 2
-    cz = (max_z + min_z) / 2
-
-    bpy.ops.mesh.primitive_cube_add(size=1, location=(cx, cy, cz))
-    obj = bpy.context.object
-    obj.name = "View Geometry"
-    obj.scale = (max_x - min_x, max_y - min_y, max_z - min_z)
-    bpy.ops.object.transform_apply(scale=True)
-
-    all_verts = [v.index for v in obj.data.vertices]
-
-    vg1 = obj.vertex_groups.new(name="Component01")
-    vg1.add(all_verts, 1.0, 'REPLACE')
-
-    vg2 = obj.vertex_groups.new(name="ladder1")
-    vg2.add(all_verts, 1.0, 'REPLACE')
-
-    set_dgm_props(obj, LOD_VALUES["View Geometry"])
-    assign_default_material(obj)
-    move_to_collection(obj, "View Geometry")
-
-    return obj
-
 
 # ---------------------------------------------------------------------------
 # Fire Geometry LOD
@@ -718,79 +684,513 @@ def add_memory_magazine():
     ])
 
 
-def add_memory_ladder():
-    b = _bbox_data()
-    if not b:
+def _parse_p3d_lod(filepath):
+    """
+    Parse a single-LOD MLOD P3D file.
+    Returns (verts, faces, named_selections, resolution) where:
+      verts            : list of (x, y, z) in Blender space (Arma XZY -> Blender XYZ)
+      faces            : list of vertex-index lists (quads or tris)
+      named_selections : dict  name -> {'verts': [...], 'faces': [...]}
+      resolution       : float LOD resolution value
+    """
+    import struct, os
+
+    if not os.path.exists(filepath):
+        raise FileNotFoundError(f"Bundled P3D not found: {filepath}")
+
+    data = open(filepath, "rb").read()
+    pos = 0
+
+    assert data[pos:pos+4] == b'MLOD', "Not a valid MLOD P3D"
+    pos += 12  # sig(4) + version(4) + nlods(4)
+
+    assert data[pos:pos+4] == b'P3DM', "Expected P3DM LOD"
+    pos += 4 + 8  # sig + version_major + version_minor
+
+    npoints, nnormals, nfaces = struct.unpack_from('<III', data, pos)
+    pos += 16  # 3 counts + flags
+
+    # Vertices stored as (x, z, y, flags) — swap z/y for Blender
+    verts = []
+    for _ in range(npoints):
+        x, z, y, _flag = struct.unpack_from('<fffI', data, pos); pos += 16
+        verts.append((x, y, z))
+
+    pos += nnormals * 12  # skip normals
+
+    faces = []
+    for _ in range(nfaces):
+        count_sides = struct.unpack_from('<I', data, pos)[0]; pos += 4
+        fv = []
+        for _ in range(count_sides):
+            vi, _ni, _u, _v = struct.unpack_from('<IIff', data, pos); pos += 16
+            fv.append(vi)
+        if count_sides < 4:
+            pos += 16  # triangle padding slot
+        pos += 4  # face flags
+        pos = data.index(b'\x00', pos) + 1  # texture string
+        pos = data.index(b'\x00', pos) + 1  # material string
+        faces.append(fv)
+
+    named_selections = {}
+    while pos < len(data):
+        active = data[pos]; pos += 1
+        if active == 0:
+            break
+        end = data.index(b'\x00', pos)
+        name = data[pos:end].decode('ascii', errors='replace'); pos = end + 1
+        length = struct.unpack_from('<I', data, pos)[0]; pos += 4
+        tagg_data = data[pos:pos+length]; pos += length
+        if name == '#EndOfFile#':
+            break
+        if name.startswith('#'):
+            continue
+        named_selections[name] = {
+            'verts': [i for i, w in enumerate(tagg_data[:npoints]) if w > 0],
+            'faces': [i for i, s in enumerate(tagg_data[npoints:npoints+nfaces]) if s > 0],
+        }
+
+    resolution = struct.unpack_from('<f', data, pos)[0]
+    return verts, faces, named_selections, resolution
+
+
+def _assets_path(filename):
+    import os
+    return os.path.join(os.path.dirname(__file__), "assets", filename)
+
+
+
+# ---------------------------------------------------------------------------
+# Ladder Collision Geometry
+# ---------------------------------------------------------------------------
+
+def _get_or_create_geometry_object():
+    """Return the shared Geometry LOD object, creating it if it does not exist."""
+    col = bpy.data.collections.get("Geometry")
+    if col:
+        for o in col.objects:
+            if o.name == "Geometry" and o.type == 'MESH':
+                return o
+    mesh = bpy.data.meshes.new("Geometry")
+    obj  = bpy.data.objects.new("Geometry", mesh)
+    bpy.context.scene.collection.objects.link(obj)
+    set_dgm_props(obj, LOD_VALUES["Geometry"], mass=0.0)
+    clear_named_props(obj)
+    add_named_prop(obj, "autocenter", "0")
+    add_named_prop(obj, "canbeoccluded", "1")
+    add_named_prop(obj, "canocclude", "0")
+    assign_default_material(obj)
+    move_to_collection(obj, "Geometry")
+    return obj
+
+
+def _make_box_verts(cx, cy, cz, sx, sy, sz):
+    """Return 8 corner vertices of a box centred at (cx,cy,cz) with half-extents sx,sy,sz."""
+    return [
+        (cx - sx, cy - sy, cz - sz), (cx + sx, cy - sy, cz - sz),
+        (cx + sx, cy + sy, cz - sz), (cx - sx, cy + sy, cz - sz),
+        (cx - sx, cy - sy, cz + sz), (cx + sx, cy - sy, cz + sz),
+        (cx + sx, cy + sy, cz + sz), (cx - sx, cy + sy, cz + sz),
+    ]
+
+BOX_FACES = [
+    (0,1,2,3), (4,7,6,5),
+    (0,4,5,1), (1,5,6,2),
+    (2,6,7,3), (3,7,4,0),
+]
+
+
+def create_ladder_collision(ladder_obj, mass_per_stringer=20.0):
+    """
+    Create Geometry LOD collision for a ladder — two box components (left+right stringer)
+    added into the shared Geometry object.
+
+    Tracking which ComponentXX belongs to which ladder is done via a custom property
+    'dgm_ladder_col_map' on the Geometry object — a dict {ladder_name: [comp_name, ...]}
+    No extra vertex groups are created beyond the required ComponentXX groups.
+    """
+    width        = ladder_obj.get('dgm_p_width',         0.440)
+    tube_d       = ladder_obj.get('dgm_p_tube_diameter', 0.042)
+    total_height = ladder_obj.get('dgm_ladder_height',   6.0)
+
+    sx_local = width / 2.0
+
+    # World-space ladder position — use matrix_world to transform local stringer centres
+    # This handles translation, rotation and scale correctly.
+    mw = ladder_obj.matrix_world
+    # Left and right stringer world positions (local X=±sx, Y=0, Z=0)
+    origin_world  = mw @ mathutils.Vector((0.0,        0.0, 0.0))
+    right_stringer = mw @ mathutils.Vector(( sx_local,  0.0, 0.0))
+    left_stringer  = mw @ mathutils.Vector((-sx_local,  0.0, 0.0))
+
+    wc       = [mw @ mathutils.Vector(c) for c in ladder_obj.bound_box]
+    base_z   = min(c.z for c in wc)
+    cx_world = origin_world.x   # X centre of ladder (at origin)
+    cy_world = origin_world.y   # Y = stringer plane, not bbox centre
+
+    geo = _get_or_create_geometry_object()
+
+    # Remove previously generated components for this ladder using the map
+    import json
+    col_map_raw = geo.get('dgm_ladder_col_map', '{}')
+    try:
+        col_map = json.loads(col_map_raw)
+    except Exception:
+        col_map = {}
+
+    ladder_name = ladder_obj.name
+    old_comps = col_map.get(ladder_name, [])
+    if old_comps:
+        old_vg_names = set(old_comps)
+        keep_names   = {vg.name for vg in geo.vertex_groups} - old_vg_names
+        remove_verts = set()
+        for v in geo.data.vertices:
+            v_grp_names = {geo.vertex_groups[g.group].name for g in v.groups}
+            if v_grp_names & old_vg_names and not v_grp_names & keep_names:
+                remove_verts.add(v.index)
+        for vg_name in old_comps:
+            vg = geo.vertex_groups.get(vg_name)
+            if vg:
+                geo.vertex_groups.remove(vg)
+        if remove_verts:
+            bm_del = bmesh.new()
+            bm_del.from_mesh(geo.data)
+            bm_del.verts.ensure_lookup_table()
+            del_v = [bm_del.verts[i] for i in remove_verts if i < len(bm_del.verts)]
+            bmesh.ops.delete(bm_del, geom=del_v, context='VERTS')
+            bm_del.to_mesh(geo.data)
+            bm_del.free()
+            geo.data.update()
+
+    # Build both stringer boxes
+    bm = bmesh.new()
+    bm.from_mesh(geo.data)
+    bm.verts.ensure_lookup_table()
+
+    hl = tube_d / 2.0
+    hh = total_height / 2.0
+    cz = base_z + hh
+
+    # Reserve both component indices up front so they are sequential (01+02, 03+04, etc.)
+    # _next_geometry_component_index scans existing vertex groups — calling it twice in a
+    # loop would return the same index both times because the first group isn't written yet.
+    idx_a = _next_geometry_component_index()
+    # Temporarily mark idx_a as used by inserting a placeholder group
+    _placeholder = geo.vertex_groups.new(name="Component{:02d}".format(idx_a))
+    idx_b = _next_geometry_component_index()
+    geo.vertex_groups.remove(_placeholder)   # remove placeholder — real group added later
+
+    comp_names = ["Component{:02d}".format(idx_a), "Component{:02d}".format(idx_b)]
+
+    new_comps   = []
+    vert_ranges = []
+    for comp_name, stringer_world_pos in zip(comp_names, (left_stringer, right_stringer)):
+        cx = stringer_world_pos.x
+        cy = stringer_world_pos.y
+
+        base_idx  = len(bm.verts)
+        new_verts = [bm.verts.new(mathutils.Vector(co))
+                     for co in _make_box_verts(cx, cy, cz, hl, hl, hh)]
+        for fi in BOX_FACES:
+            bm.faces.new([new_verts[i] for i in fi])
+
+        new_comps.append(comp_name)
+        vert_ranges.append((comp_name, base_idx, base_idx + 8))
+
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(geo.data)
+    bm.free()
+    geo.data.update()
+
+    # Assign ComponentXX vertex groups only — no tag groups
+    total_verts = len(geo.data.vertices)
+    for comp_name, v_start, v_end in vert_ranges:
+        vert_indices = list(range(v_start, min(v_end, total_verts)))
+        vg = geo.vertex_groups.new(name=comp_name)
+        vg.add(vert_indices, 1.0, 'REPLACE')
+        w = mass_per_stringer / max(len(vert_indices), 1)
+        add_fhq_weights(geo, weight=w)
+
+    # Save the map so we can find these components later
+    col_map[ladder_name] = new_comps
+    geo['dgm_ladder_col_map'] = json.dumps(col_map)
+
+    existing_mass = geo.get("dgm_mass", 0.0)
+    set_dgm_props(geo, LOD_VALUES["Geometry"],
+                  mass=existing_mass + mass_per_stringer * 2)
+
+    return geo
+
+def add_memory_ladder(ladder_idx=1):
+    """
+    Import ladder Memory and View Geometry LODs from bundled P3D assets.
+    ladder_idx (1-3) controls which prefix is used: ladder1, ladder2, ladder3.
+    Named selections from the P3D (always 'ladder1' prefix) are renamed to match
+    the requested index.
+    """
+    ensure_object_mode()
+
+    prefix = "ladder{}".format(ladder_idx)
+    point_names = [
+        prefix,
+        prefix + '_bottom_front',
+        prefix + '_con',
+        prefix + '_con_dir',
+        prefix + '_dir',
+        prefix + '_top_front',
+    ]
+
+    # --- Memory LOD ---
+    try:
+        verts, faces, named_selections, _ = _parse_p3d_lod(_assets_path("ladder_memory.p3d"))
+    except Exception as e:
+        print(f"[DGM] Failed to load ladder Memory P3D: {e}")
         return
 
     mem = _get_or_create_memory_object()
 
-    _remove_memory_groups(mem, [
-        'ladder1', 'ladder1_bottom_front', 'ladder1_con',
-        'ladder1_con_dir', 'ladder1_dir', 'ladder1_top_front'
-    ])
+    # Remove any existing selections for this ladder slot
+    _remove_memory_groups(mem, point_names)
 
-    ensure_object_mode()
+    import mathutils
 
-    min_z = b['min_z']
-    max_z = b['max_z']
-    height = max_z - min_z
+    # Align spawn to target object:
+    #   X/Y = world bounding box centre
+    #   Z   = target min Z + 0.340 m (first rung height) — same for all ladder slots
+    target_obj = bpy.context.scene.dgm_target_object
+    if target_obj is not None:
+        world_corners = [target_obj.matrix_world @ mathutils.Vector(c)
+                         for c in target_obj.bound_box]
+        target_cx    = sum(c.x for c in world_corners) / 8.0
+        target_cy    = sum(c.y for c in world_corners) / 8.0
+        target_min_z = min(c.z for c in world_corners)
+    else:
+        target_cx, target_cy, target_min_z = 0.0, 0.0, 0.0
 
-    z_ladder1_bottom = min_z + 1.30
-    z_ladder1_top = max_z - height * 0.15
+    # Place memory points at fixed offsets from first_rung and last_rung.
+    # NO scaling — each point has a fixed semantic position:
+    #
+    #  P3D vert offsets (measured from asset, Y=up in P3D = Z in Blender):
+    #    vert[0]: first_rung_z - 0.021  (dir point near ground)
+    #    vert[1]: first_rung_z + 0.000  (bottom_front — exactly first rung)
+    #    vert[2]: first_rung_z + 0.912  (con — interaction start)
+    #    vert[3]: last_rung_z  + 0.306  (ladder1 top — above last rung)
+    #    vert[4]: last_rung_z  + 0.000  (top_front — exactly last rung)
+    #    vert[5]: last_rung_z  + 0.004  (con_dir top)
+    #
+    # X and Z (depth) offsets from the P3D are kept as-is.
 
-    z_bottom_front = min_z + 0.34
-    z_con_top = max_z - height * 0.20
+    # Get actual ladder dimensions from target object
+    target_ladder = bpy.context.scene.dgm_target_object
+    if target_ladder is not None and target_ladder.get('dgm_ladder'):
+        rung_count    = int(target_ladder.get('dgm_ladder_rungs',   15))
+        rung_spacing  = float(target_ladder.get('dgm_p_rung_spacing',  0.320))
+        ground_offset = float(target_ladder.get('dgm_p_ground_offset', 0.340))
+    else:
+        rung_count, rung_spacing, ground_offset = 15, 0.320, 0.340
 
-    cx = b['cx']
-    cy = b['cy']
+    actual_first_rung = ground_offset
+    actual_last_rung  = ground_offset + (rung_count - 1) * rung_spacing
 
-    front_offset = 0.3  # 30 cm
+    # Fixed Z offsets per vertex index (from P3D asset analysis)
+    # Y position = stringer plane (local Y=0), not bbox centre
+    _tgt = bpy.context.scene.dgm_target_object
+    _stringer_cy = (_tgt.matrix_world @ mathutils.Vector((0.0, 0.0, 0.0))).y \
+                   if _tgt is not None else 0.0
 
-    v_ladder1_top = (cx, cy, z_ladder1_top)
-    v_ladder1_bottom = (cx, cy, z_ladder1_bottom)
-
-    v_bottom_front = (cx, cy, z_bottom_front)
-    v_con_top = (cx, cy, z_con_top)
-
-    v_con_dir_bottom = (b['max_x'] + front_offset, cy, z_bottom_front)
-    v_con_dir_top = (b['min_x'] - front_offset, cy, z_con_top)
-
-    base = len(mem.data.vertices)
-    coords = [
-        v_ladder1_top,
-        v_ladder1_bottom,
-        v_bottom_front,
-        v_con_top,
-        v_con_dir_bottom,
-        v_con_dir_top,
+    VERT_Z_OFFSETS = [
+        actual_first_rung - 0.021,   # 0
+        actual_first_rung + 0.000,   # 1
+        actual_first_rung + 0.912,   # 2
+        actual_last_rung  + 0.306,   # 3
+        actual_last_rung  + 0.000,   # 4
+        actual_last_rung  + 0.004,   # 5
     ]
 
-    mem.data.vertices.add(len(coords))
-    for i, co in enumerate(coords):
-        mem.data.vertices[base + i].co = co
-
+    base = len(mem.data.vertices)
+    mem.data.vertices.add(len(verts))
+    for i, co in enumerate(verts):
+        z = target_min_z + VERT_Z_OFFSETS[i] if i < len(VERT_Z_OFFSETS)             else target_min_z + actual_last_rung
+        # Rotate 180° around Z so memory faces the ladder front (cage is behind)
+        mem.data.vertices[base + i].co = mathutils.Vector((
+            -co[0] + target_cx,
+            -co[1] + _stringer_cy,
+            z,
+        ))
     mem.data.update()
 
-    i_top = base + 0
-    i_bottom = base + 1
-    i_bottom_front = base + 2
-    i_con_top = base + 3
-    i_dir_bottom = base + 4
-    i_dir_top = base + 5
+    # The P3D always uses 'ladder1' prefix — remap to the requested index
+    for sel_name, sel_data in named_selections.items():
+        # Skip any corrupted/internal selection names (e.g. "AGG\x01...")
+        if not sel_name.isascii() or '\x01' in sel_name:
+            continue
+        remapped = sel_name.replace("ladder1", prefix, 1)
+        shifted = [i + base for i in sel_data['verts']]
+        vg = mem.vertex_groups.get(remapped) or mem.vertex_groups.new(name=remapped)
+        if shifted:
+            vg.add(shifted, 1.0, 'REPLACE')
 
-    def add(group, indices):
-        vg = mem.vertex_groups.get(group) or mem.vertex_groups.new(name=group)
-        vg.add(indices, 1.0, 'REPLACE')
+    # --- View Geometry LOD ---
+    create_view_geometry_ladder(ladder_idx=ladder_idx)
 
-    add('ladder1', [i_top, i_bottom])
-    add('ladder1_bottom_front', [i_bottom_front])
-    add('ladder1_con', [i_bottom_front, i_con_top])
-    add('ladder1_con_dir', [i_dir_bottom, i_dir_top])
-    add('ladder1_dir', [i_dir_bottom])
-    add('ladder1_top_front', [i_con_top])
 
-    create_view_geometry_ladder()
+def remove_memory_ladder(ladder_idx=1):
+    """Remove all memory points and View Geometry for a ladder group by index.
+
+    If the Memory object ends up with no vertex groups after removal, the object
+    itself and its collection are also deleted.
+    """
+    ensure_object_mode()
+    prefix = "ladder{}".format(ladder_idx)
+    point_names = [
+        prefix,
+        prefix + '_bottom_front',
+        prefix + '_con',
+        prefix + '_con_dir',
+        prefix + '_dir',
+        prefix + '_top_front',
+    ]
+    mem = get_memory_object()
+    if mem:
+        _remove_memory_groups(mem, point_names)
+        # If Memory object now has no vertex groups, remove it and the collection
+        if len(mem.vertex_groups) == 0:
+            bpy.data.objects.remove(mem, do_unlink=True)
+            _cleanup_empty_collection("Memory")
+    remove_view_geometry_ladder(ladder_idx=ladder_idx)
+
+
+def _create_lod_from_p3d(filepath, obj_name, collection_name, lod_key):
+    """
+    Parse a P3D and create a Blender mesh object registered as a DayZ LOD.
+    Named selections are recreated as vertex groups.
+    """
+    verts, faces, named_selections, _ = _parse_p3d_lod(filepath)
+
+    mesh = bpy.data.meshes.new(obj_name)
+    mesh.from_pydata(verts, [], faces)
+    mesh.update()
+
+    obj = bpy.data.objects.new(obj_name, mesh)
+    bpy.context.scene.collection.objects.link(obj)
+
+    for sel_name, sel_data in named_selections.items():
+        if not sel_name.isascii() or '\x01' in sel_name:
+            continue
+        vg = obj.vertex_groups.new(name=sel_name)
+        if sel_data['verts']:
+            vg.add(sel_data['verts'], 1.0, 'REPLACE')
+
+    set_dgm_props(obj, LOD_VALUES[lod_key])
+    assign_default_material(obj)
+    set_active(obj)
+    move_to_collection(obj, collection_name)
+    return obj
+
+def _ladder_vg_obj_name(ladder_idx):
+    """Canonical object name for a ladder View Geometry object."""
+    return "View Geometry.ladder{}".format(ladder_idx)
+
+
+def _cleanup_empty_collection(col_name):
+    """Remove a scene collection if it exists and contains no objects."""
+    col = bpy.data.collections.get(col_name)
+    if col is None:
+        return
+    # Count all objects recursively
+    total = len(col.all_objects)
+    if total == 0:
+        # Unlink from every parent that holds it
+        for parent in list(bpy.data.collections) + [bpy.context.scene.collection]:
+            if col.name in [c.name for c in getattr(parent, 'children', [])]:
+                try:
+                    parent.children.unlink(col)
+                except Exception:
+                    pass
+        bpy.data.collections.remove(col)
+
+
+def create_view_geometry_ladder(ladder_idx=1):
+    """Import the bundled ladder View Geometry P3D as a DayZ LOD object.
+
+    The created object is named 'View Geometry.ladderN' so it can be found
+    and deleted when the corresponding memory group is removed.
+    Each index is offset upward on Z to match the memory point placement.
+    The named selection 'Component01' is renamed to 'ladderN' to match the index.
+    """
+    obj_name = _ladder_vg_obj_name(ladder_idx)
+
+    # Remove any existing object for this slot first
+    existing = bpy.data.objects.get(obj_name)
+    if existing:
+        bpy.data.objects.remove(existing, do_unlink=True)
+
+    try:
+        obj = _create_lod_from_p3d(
+            _assets_path("ladder_view_geometry.p3d"),
+            obj_name=obj_name,
+            collection_name="View Geometry",
+            lod_key="View Geometry",
+        )
+    except Exception as e:
+        print(f"[DGM] Failed to load ladder View Geometry P3D: {e}")
+        return None
+
+    if obj is not None:
+        # Align view geometry:
+        #   X/Y = target world bounding box centre
+        #   Z   = target min Z (no first-rung offset, no per-index offset)
+        import mathutils
+        target_obj = bpy.context.scene.dgm_target_object
+        if target_obj is not None:
+            world_corners = [target_obj.matrix_world @ mathutils.Vector(c)
+                             for c in target_obj.bound_box]
+            target_cx    = sum(c.x for c in world_corners) / 8.0
+            target_min_z = min(c.z for c in world_corners)
+            # Use stringer Y (local Y=0) — cage shifts the bounding box centre
+            target_cy    = (target_obj.matrix_world @ mathutils.Vector((0.0, 0.0, 0.0))).y
+        else:
+            target_cx, target_cy, target_min_z = 0.0, 0.0, 0.0
+        # Scale view geometry Z to match actual last_rung_z.
+        # Asset view geometry height = 5.584 m (= 15 rungs * 0.320 + 0.340 + 0.700 - 0.320)
+        # We scale so the top of the view geometry aligns with actual total_height.
+        ASSET_VG_HEIGHT = 5.584   # view geometry P3D total height (Y range)
+        if target_obj is not None and target_obj.get('dgm_ladder'):
+            rung_count2    = int(target_obj.get('dgm_ladder_rungs',   15))
+            rung_spacing2  = float(target_obj.get('dgm_p_rung_spacing',  0.320))
+            ground_offset2 = float(target_obj.get('dgm_p_ground_offset', 0.340))
+            top_ext2       = float(target_obj.get('dgm_p_top_extension', 0.700))
+            actual_height  = ground_offset2 + (rung_count2 - 1) * rung_spacing2 + top_ext2
+        else:
+            actual_height = ASSET_VG_HEIGHT
+        vg_scale = actual_height / ASSET_VG_HEIGHT if ASSET_VG_HEIGHT > 0 else 1.0
+        obj.scale = (1.0, 1.0, vg_scale)
+        bpy.ops.object.transform_apply(scale=True)
+
+        obj.location.x = target_cx
+        obj.location.y = target_cy
+        obj.location.z = target_min_z
+
+        # Rename vertex groups to match the requested ladder index.
+        # P3D asset always uses 'ladder1' and 'Component01' — remap both.
+        vg_ladder = obj.vertex_groups.get("ladder1")
+        if vg_ladder:
+            vg_ladder.name = "ladder{}".format(ladder_idx)
+
+        vg_comp = obj.vertex_groups.get("Component01")
+        if vg_comp:
+            vg_comp.name = "Component{:02d}".format(ladder_idx)
+
+    return obj
+
+
+def remove_view_geometry_ladder(ladder_idx=1):
+    """Delete the View Geometry object for a given ladder index, then clean up empty collections."""
+    obj_name = _ladder_vg_obj_name(ladder_idx)
+    obj = bpy.data.objects.get(obj_name)
+    if obj:
+        bpy.data.objects.remove(obj, do_unlink=True)
+    _cleanup_empty_collection("View Geometry")
 
 
 def add_memory_lights(count=1):
@@ -898,11 +1298,13 @@ def create_lod_meshes():
 
         ensure_object_mode()
 
-        # Remove any existing LOD with this index so we don't get duplicates
-        existing_name = "LOD{}".format(lod_num)
+        # Name includes the source object name so multiple objects can each have
+        # their own LOD set without overwriting each other.
+        existing_name = "{}.LOD{}".format(original_obj.name, lod_num)
+
+        # Remove any existing LOD with this exact name (regenerate)
         if existing_name in bpy.data.objects:
-            old = bpy.data.objects[existing_name]
-            bpy.data.objects.remove(old, do_unlink=True)
+            bpy.data.objects.remove(bpy.data.objects[existing_name], do_unlink=True)
 
         lod_obj = original_obj.copy()
         lod_obj.data = original_obj.data.copy()
