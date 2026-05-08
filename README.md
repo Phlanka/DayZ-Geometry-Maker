@@ -17,6 +17,7 @@ Built and maintained by [Phlanka](https://phlanka.com).
 - **Named Selections** — Synced from vertex groups, with hidden selection export names
 - **model.cfg generation** — Writes a CfgModels / CfgSkeletons config alongside the P3D
 - **Correct normals** — Deduplicated split normals written with proper Arma axis mapping — no F5 needed in Object Builder
+- **Model Generator** — procedural ladder and cabin generators built to DayZ standards, with live preview, collision generation, and integrity checks
 - **Texture Baker integration** — Optional integration with [DayZ Texture Tools](https://beta.phlanka.com/) to bake and assign textures at export time
 - **Model Generator** — Procedural model generation directly in Blender, no manual mesh building required
 
@@ -106,6 +107,19 @@ This project is licensed under the **GNU General Public License v3.0** with addi
 - **You may not sell** this addon or any derivative as a standalone or bundled product
 - Any derivative work must be released as open source under the same license
 - See [LICENSE](LICENSE) for full terms
+
+---
+
+## Contributors
+
+A huge thank you to everyone who has contributed code, fixes and features to this project.
+
+| Contributor | Contributions |
+|---|---|
+| [Phlanka](https://github.com/Phlanka) | Creator & maintainer — core addon, P3D exporter, memory LOD, updater, named selections |
+| [7ooWORKS](https://github.com/7ooWORKS) | Ladder Generator, Safety Cage, Cabin Generator, multi-ladder support, collision generation, ladder integrity checks, numerous bug fixes |
+
+Want to contribute? Check out [CONTRIBUTING.md](CONTRIBUTING.md) to get started.
 
 ---
 
