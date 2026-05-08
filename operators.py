@@ -4,7 +4,7 @@ DayZ Geometry Maker - Operators and Panel
 
 import bpy
 import math
-from . import geometry, updater, baker_bridge, ladder_generator
+from . import geometry, updater, baker_bridge, ladder_generator, cabin_generator
 
 
 # ---------------------------------------------------------------------------
@@ -1121,7 +1121,24 @@ class DGM_PT_generators(bpy.types.Panel):
 
     def draw(self, context):
         layout = self.layout
-        ladder_generator.draw_ladder_generator_section(layout, context)
+        scene = context.scene
+
+        def _gen_section(prop, label, icon):
+            box = layout.box()
+            row = box.row()
+            is_open = getattr(scene, prop, False)
+            op = row.operator("dgm.toggle_section", text=label,
+                              icon='TRIA_DOWN' if is_open else 'TRIA_RIGHT')
+            op.prop = prop
+            return box, is_open
+
+        box, is_open = _gen_section("dgm_show_ladder_gen", "Ladder Generator", 'MESH_CYLINDER')
+        if is_open:
+            ladder_generator.draw_ladder_generator_section(box, context)
+
+        box, is_open = _gen_section("dgm_show_cabin_gen", "Cabin Generator", 'HOME')
+        if is_open:
+            cabin_generator.draw_cabin_generator_section(box, context)
 
 class DGM_PT_main_panel(bpy.types.Panel):
     bl_label = "DayZ Geometry Maker"
@@ -1491,6 +1508,8 @@ def register_scene_props():
     # Collapsible section toggles — all closed by default
     S.dgm_show_selections  = bpy.props.BoolProperty(default=False)
     S.dgm_show_generators  = bpy.props.BoolProperty(default=False)
+    S.dgm_show_ladder_gen  = bpy.props.BoolProperty(default=False)
+    S.dgm_show_cabin_gen   = bpy.props.BoolProperty(default=False)
     S.dgm_show_collision   = bpy.props.BoolProperty(default=False)
     S.dgm_show_interior    = bpy.props.BoolProperty(default=False)
     S.dgm_show_terrain     = bpy.props.BoolProperty(default=False)
@@ -1582,7 +1601,7 @@ def unregister_scene_props():
     props = [
         "dgm_target_object",
         "dgm_pending_selection",
-        "dgm_show_selections", "dgm_show_generators", "dgm_show_collision", "dgm_show_interior", "dgm_show_terrain",
+        "dgm_show_selections", "dgm_show_generators", "dgm_show_ladder_gen", "dgm_show_cabin_gen", "dgm_show_collision", "dgm_show_interior", "dgm_show_terrain",
         "dgm_show_memory", "dgm_show_lods", "dgm_show_export", "dgm_cta_baking_open",
         "dgm_fire_quality",
         "dgm_memory_doors_count", "dgm_memory_lights_count", "dgm_memory_ladders_count",
@@ -1791,11 +1810,13 @@ def register():
     for cls in operator_classes:
         bpy.utils.register_class(cls)
     ladder_generator.register()
+    cabin_generator.register()
     register_scene_props()
 
 
 def unregister():
     unregister_scene_props()
     ladder_generator.unregister()
+    cabin_generator.unregister()
     for cls in reversed(operator_classes):
         bpy.utils.unregister_class(cls)

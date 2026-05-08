@@ -1099,17 +1099,6 @@ def draw_ladder_generator_section(layout, context):
     is_ladder = _is_active_ladder(obj)
 
     box = layout.box()
-    # Collapsible header
-    scene = context.scene
-    header = box.row(align=True)
-    header.prop(scene, "dgm_show_ladder_gen",
-                icon='TRIA_DOWN' if scene.dgm_show_ladder_gen else 'TRIA_RIGHT',
-                emboss=False, text="")
-    header.label(text="Ladder Generator", icon='MESH_CYLINDER')
-
-    if not scene.dgm_show_ladder_gen:
-        return
-
     # Add Ladder button + counter
     ladder_count = _count_scene_ladders()
     count_row = box.row(align=True)
@@ -1263,14 +1252,11 @@ ladder_classes = (
 def register():
     for cls in ladder_classes:
         bpy.utils.register_class(cls)
-    bpy.types.Scene.dgm_show_ladder_gen = bpy.props.BoolProperty(
-        name="Show Ladder Generator", default=False)
 
 
 def unregister():
     for cls in reversed(ladder_classes):
         bpy.utils.unregister_class(cls)
-    del bpy.types.Scene.dgm_show_ladder_gen
 
 
 if __name__ == "__main__":
