@@ -18,6 +18,24 @@
   - Component and ladder named selections correctly numbered: Ladder 1 → Component01 + ladder1, Ladder 2 → Component02 + ladder2, Ladder 3 → Component03 + ladder3.
   - Generated objects named **DZ_Ladder_1 / 2 / 3**.
 
+## [2.1.2] - 2026-05-08
+
+### Added
+- **Ladder Generator** — new "DayZ Object Generator" panel in the viewport. Generate a procedural Type 1 (straight) ladder to DayZ standard measurements without modelling by hand. Rung spacing, tube diameter, width, rung count, top extension and tube segments are all configurable. Parameters show a checkmark when they match DayZ standards, or a warning icon if they deviate.
+- **Safety Cage** — optional D-arc safety cage add-on for generated ladders. Adjustable depth, hoop spacing, start height and vertical bars. Cage width always follows ladder width automatically.
+- **Cabin Generator** — procedural low-poly cabin shell (walls, gable roof, floor, door and windows) added to the same panel as the Ladder Generator. Live preview included.
+- **Multi-ladder support** — up to 3 independent ladder groups per model, each with its own add, delete and rotate controls. Ladders are offset on the Z axis automatically so they don't overlap.
+- **Ladder collision generation** — automatically generates two collision boxes (left and right stringer) into the Geometry LOD with correct ComponentXX naming.
+- **Ladder integrity check** — the panel detects if a generated ladder has been manually edited or scaled and shows a red warning with actual vs expected dimensions. A Restore Ladder button rebuilds the mesh from the stored parameters without moving it.
+- **Live preview** — all generators show a live viewport preview as you adjust parameters.
+
+### Fixed
+- Ladder memory points and view geometry now sit correctly at the first and last rung positions regardless of rung count.
+- Resolution LOD naming now includes the source object name to prevent LODs from different objects overwriting each other.
+- View geometry correctly named per ladder slot (ladder1/2/3) with Component01 selection preserved.
+- Rotation now applies around the ladder's own centre rather than the world origin.
+- P3D export path select button was missing — restored.
+
 ---
 
 ## [2.0.6] - 2026-05-01
