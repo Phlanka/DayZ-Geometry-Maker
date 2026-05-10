@@ -4,7 +4,108 @@ DayZ Geometry Maker - Operators and Panel
 
 import bpy
 import math
+import os
 from . import geometry, updater, baker_bridge, ladder_generator, cabin_generator
+
+
+def _recommended_model_cfg_for_template(template):
+    return template in {'container_base', 'object_with_doors'}
+
+
+def _config_template_update(self, context):
+    template = getattr(self, "dgm_config_template", "container_base")
+    self.dgm_write_model_cfg = _recommended_model_cfg_for_template(template)
+    if template == 'none':
+        self.dgm_export_config_cpp = False
+        self.dgm_write_model_cfg = False
+    elif not self.dgm_export_config_cpp:
+        self.dgm_export_config_cpp = True
+
+
+def _default_export_subdir(scene, folder_name):
+    raw = getattr(scene, "dgm_p3d_path", "").strip()
+    if not raw:
+        return ""
+    p3d_path = bpy.path.abspath(raw)
+    if not p3d_path.lower().endswith(".p3d"):
+        p3d_path += ".p3d"
+    return os.path.join(os.path.dirname(p3d_path), folder_name)
+
+
+def _sync_default_export_paths(scene):
+    textures = _default_export_subdir(scene, "data")
+    scripts = _default_export_subdir(scene, "scripts")
+    if textures and not getattr(scene, "dgm_override_textures_path", False):
+        scene.dgm_textures_path = textures
+    if scripts and not getattr(scene, "dgm_override_scripts_path", False):
+        scene.dgm_scripts_path = scripts
+
+
+def _p3d_path_update(self, context):
+    _sync_default_export_paths(self)
+
+
+def _override_textures_path_update(self, context):
+    _sync_default_export_paths(self)
+
+
+def _override_scripts_path_update(self, context):
+    _sync_default_export_paths(self)
+
+
+def _memory_any_group_exists(point_names):
+    return any(geometry.memory_point_exists(name) for name in point_names)
+
+
+def _ladder_count_point_names(idx):
+    prefix = "ladder{}".format(idx)
+    return [
+        prefix,
+        prefix + '_bottom_front',
+        prefix + '_con',
+        prefix + '_con_dir',
+        prefix + '_dir',
+        prefix + '_top_front',
+    ]
+
+
+def _lid_count_point_names(idx):
+    return ['lid_{}_axis_1'.format(idx), 'lid_{}_axis_2'.format(idx)]
+
+
+def _building_door_count_point_names(idx):
+    return [
+        "door{}".format(idx),
+        "door{}_action".format(idx),
+        "door{}_axis_1".format(idx),
+        "door{}_axis_2".format(idx),
+    ]
+
+
+def _highest_existing_memory_index(max_count, names_fn):
+    highest = 0
+    for idx in range(1, max_count + 1):
+        if _memory_any_group_exists(names_fn(idx)):
+            highest = idx
+    return highest
+
+
+def _clamp_count_to_existing(scene, prop_name, max_count, names_fn):
+    highest = _highest_existing_memory_index(max_count, names_fn)
+    if getattr(scene, prop_name, 0) < highest:
+        setattr(scene, prop_name, highest)
+
+
+def _memory_ladders_count_update(self, context):
+    _clamp_count_to_existing(self, "dgm_memory_ladders_count", 5, _ladder_count_point_names)
+
+
+def _memory_lid_count_update(self, context):
+    _clamp_count_to_existing(self, "dgm_memory_doors_count", 8, _lid_count_point_names)
+
+
+def _memory_building_doors_count_update(self, context):
+    _clamp_count_to_existing(self, "dgm_memory_building_doors_count", 8, _building_door_count_point_names)
 
 
 # ---------------------------------------------------------------------------
@@ -388,14 +489,214 @@ class DGM_OT_memory_add_damage(bpy.types.Operator):
 
 class DGM_OT_memory_add_doors(bpy.types.Operator):
     bl_idname = "dgm.memory_add_doors"
-    bl_label = "Door Points"
-    bl_description = "Add/update door axis points (two per door) defining each door's hinge axis"
+    bl_label = "Lid Axis"
+    bl_description = "Add/update lid axis points for Container Base lid animation"
     bl_options = {'REGISTER', 'UNDO'}
     def execute(self, context):
         if not context.scene.dgm_target_object:
             self.report({'ERROR'}, "Select a target object first")
             return {'CANCELLED'}
         geometry.add_memory_doors(context.scene.dgm_memory_doors_count)
+        return {'FINISHED'}
+
+
+class DGM_OT_memory_add_lid_axis_n(bpy.types.Operator):
+    bl_idname = "dgm.memory_add_lid_axis_n"
+    bl_label = "Add Lid Axis"
+    bl_description = "Add one lid axis pair for Container Base lid animation"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    lid_idx: bpy.props.IntProperty(default=1, min=1, max=8)
+
+    def execute(self, context):
+        if not context.scene.dgm_target_object:
+            self.report({'ERROR'}, "Select a target object first")
+            return {'CANCELLED'}
+        if self.lid_idx > 1:
+            prev_exists = (
+                geometry.memory_point_exists('lid_{}_axis_1'.format(self.lid_idx - 1)) and
+                geometry.memory_point_exists('lid_{}_axis_2'.format(self.lid_idx - 1))
+            )
+            if not prev_exists:
+                self.report({'ERROR'},
+                    "Add Lid axis {} first".format(self.lid_idx - 1))
+                return {'CANCELLED'}
+        geometry.add_memory_door_axis(self.lid_idx)
+        return {'FINISHED'}
+
+
+class DGM_OT_memory_delete_lid_axis(bpy.types.Operator):
+    bl_idname = "dgm.memory_delete_lid_axis"
+    bl_label = "Delete Lid Axis"
+    bl_description = "Remove this lid axis pair. Higher lid axes must be deleted first"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    lid_idx: bpy.props.IntProperty(default=1, min=1, max=8)
+
+    def execute(self, context):
+        for next_idx in range(self.lid_idx + 1, 9):
+            if (geometry.memory_point_exists('lid_{}_axis_1'.format(next_idx)) or
+                    geometry.memory_point_exists('lid_{}_axis_2'.format(next_idx))):
+                self.report({'ERROR'},
+                    "Delete Lid axis {} first".format(next_idx))
+                return {'CANCELLED'}
+        geometry.remove_memory_door_axis(self.lid_idx)
+        scene = context.scene
+        if scene.dgm_memory_doors_count > self.lid_idx - 1:
+            scene.dgm_memory_doors_count = max(0, self.lid_idx - 1)
+        self.report({'INFO'}, "Lid axis {} deleted".format(self.lid_idx))
+        return {'FINISHED'}
+
+
+def _building_door_point_names(door_idx):
+    return [
+        "door{}".format(door_idx),
+        "door{}_action".format(door_idx),
+        "door{}_axis_1".format(door_idx),
+        "door{}_axis_2".format(door_idx),
+    ]
+
+
+def _target_has_door_selection(target):
+    if not target or target.type != 'MESH':
+        return False
+    for vg in target.vertex_groups:
+        if "door" in vg.name.lower() and _vertex_group_has_vertices(target, vg.name):
+            return True
+    if hasattr(target, 'dgm_props'):
+        for sm in target.dgm_props.selection_mats:
+            if "door" in sm.vgroup_name.lower() and _vertex_group_has_vertices(target, sm.vgroup_name):
+                return True
+            if "door" in sm.hidden_selection.lower() and _vertex_group_has_vertices(target, sm.vgroup_name):
+                return True
+    return False
+
+
+def _vertex_group_has_vertices(obj, group_name):
+    if not obj or obj.type != 'MESH':
+        return False
+    vg = obj.vertex_groups.get(group_name)
+    if not vg:
+        return False
+    for v in obj.data.vertices:
+        for g in v.groups:
+            if g.group == vg.index and g.weight > 0.0:
+                return True
+    return False
+
+
+def _target_has_numbered_door_selection(target, door_idx):
+    name = "door{}".format(door_idx)
+    return _vertex_group_has_vertices(target, name)
+
+
+class DGM_OT_memory_add_building_door_n(bpy.types.Operator):
+    bl_idname = "dgm.memory_add_building_door_n"
+    bl_label = "Add Door Axis"
+    bl_description = (
+        "Add Memory LOD selections and View Geometry for one DayZ building door. "
+        "Before adding, the target object must have a doorN selection with assigned vertices "
+        "(for example door1 for Door axis 1)."
+    )
+    bl_options = {'REGISTER', 'UNDO'}
+
+    door_idx: bpy.props.IntProperty(default=1, min=1, max=8)
+
+    def execute(self, context):
+        if not context.scene.dgm_target_object:
+            self.report({'ERROR'}, "Select a target object first")
+            return {'CANCELLED'}
+        if not _target_has_door_selection(context.scene.dgm_target_object):
+            self.report({'ERROR'},
+                "Target object must contain a door selection with assigned vertices")
+            return {'CANCELLED'}
+        if not _target_has_numbered_door_selection(context.scene.dgm_target_object, self.door_idx):
+            self.report({'ERROR'},
+                "Target object must contain door{} selection with assigned vertices".format(self.door_idx))
+            return {'CANCELLED'}
+        if self.door_idx > 1:
+            prev_exists = all(
+                geometry.memory_point_exists(n)
+                for n in _building_door_point_names(self.door_idx - 1)
+            )
+            if not prev_exists:
+                self.report({'ERROR'},
+                    "Add Door axis {} first".format(self.door_idx - 1))
+                return {'CANCELLED'}
+        orientation = getattr(context.scene, "dgm_memory_building_door_{}_orientation".format(self.door_idx), 'Y')
+        geometry.add_memory_building_door(self.door_idx, orientation=orientation)
+        return {'FINISHED'}
+
+
+class DGM_OT_memory_delete_building_door(bpy.types.Operator):
+    bl_idname = "dgm.memory_delete_building_door"
+    bl_label = "Delete Door Axis"
+    bl_description = "Remove this building door Memory LOD group. Higher doors must be deleted first"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    door_idx: bpy.props.IntProperty(default=1, min=1, max=8)
+
+    def execute(self, context):
+        for next_idx in range(self.door_idx + 1, 9):
+            if any(geometry.memory_point_exists(n) for n in _building_door_point_names(next_idx)):
+                self.report({'ERROR'},
+                    "Delete Door axis {} first".format(next_idx))
+                return {'CANCELLED'}
+        geometry.remove_memory_building_door(self.door_idx)
+        scene = context.scene
+        if scene.dgm_memory_building_doors_count > self.door_idx - 1:
+            scene.dgm_memory_building_doors_count = max(0, self.door_idx - 1)
+        self.report({'INFO'}, "Door axis {} deleted".format(self.door_idx))
+        return {'FINISHED'}
+
+
+class DGM_OT_memory_rotate_building_door(bpy.types.Operator):
+    bl_idname = "dgm.memory_rotate_building_door"
+    bl_label = "Rotate Door Axis"
+    bl_description = "Switch this door memory between front/back and side orientation; View Geometry is unchanged"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    door_idx: bpy.props.IntProperty(default=1, min=1, max=8)
+
+    def execute(self, context):
+        scene = context.scene
+        prop_name = "dgm_memory_building_door_{}_orientation".format(self.door_idx)
+        current = getattr(scene, prop_name, 'Y')
+        orientation = 'X' if current == 'Y' else 'Y'
+        setattr(scene, prop_name, orientation)
+        geometry.add_memory_building_door(
+            self.door_idx,
+            orientation=orientation,
+            create_view_geometry=False,
+        )
+        self.report({'INFO'}, "Door axis {} memory orientation: {}".format(self.door_idx, orientation))
+        return {'FINISHED'}
+
+
+class DGM_OT_set_default_export_subdir(bpy.types.Operator):
+    bl_idname = "dgm.set_default_export_subdir"
+    bl_label = "Use Default Export Folder"
+    bl_description = "Set this path from the selected P3D folder"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    target: bpy.props.EnumProperty(
+        items=[
+            ('textures', "Textures", "Use P3D folder plus data"),
+            ('scripts', "Scripts", "Use P3D folder plus scripts"),
+        ],
+        default='textures',
+    )
+
+    def execute(self, context):
+        folder_name = 'scripts' if self.target == 'scripts' else 'data'
+        path = _default_export_subdir(context.scene, folder_name)
+        if not path:
+            self.report({'ERROR'}, "Set the P3D path first")
+            return {'CANCELLED'}
+        if self.target == 'scripts':
+            context.scene.dgm_scripts_path = path
+        else:
+            context.scene.dgm_textures_path = path
         return {'FINISHED'}
 
 
@@ -426,6 +727,7 @@ class DGM_OT_memory_move_point(bpy.types.Operator):
             if context.mode == 'EDIT_MESH':
                 bpy.ops.object.mode_set(mode='OBJECT')
             context.scene.dgm_moving_memory_point = ""
+            context.scene.dgm_moving_memory_ladder = 0
             try:
                 bpy.ops.wm.tool_set_by_id(name="builtin.select", space_type='VIEW_3D')
             except Exception:
@@ -454,6 +756,263 @@ class DGM_OT_memory_move_point(bpy.types.Operator):
             pass
 
         context.scene.dgm_moving_memory_point = self.point_name
+        context.scene.dgm_moving_memory_ladder = 0
+
+        if not bpy.app.timers.is_registered(_poll_memory_move_exit):
+            bpy.app.timers.register(_poll_memory_move_exit, first_interval=0.2)
+
+        return {'FINISHED'}
+
+
+def _ladder_memory_point_names(ladder_idx):
+    prefix = "ladder{}".format(ladder_idx)
+    return [
+        prefix,
+        prefix + '_bottom_front',
+        prefix + '_con',
+        prefix + '_con_dir',
+        prefix + '_dir',
+        prefix + '_top_front',
+    ]
+
+
+def _ladder_memory_vertex_indices(mem, ladder_idx):
+    indices = set()
+    for name in _ladder_memory_point_names(ladder_idx):
+        vg = mem.vertex_groups.get(name)
+        if not vg:
+            continue
+        for v in mem.data.vertices:
+            for g in v.groups:
+                if g.group == vg.index:
+                    indices.add(v.index)
+    return indices
+
+
+def _lid_axis_point_names(lid_idx):
+    return [
+        'lid_{}_axis_1'.format(lid_idx),
+        'lid_{}_axis_2'.format(lid_idx),
+    ]
+
+
+def _memory_vertex_indices_for_names(mem, point_names):
+    indices = set()
+    for name in point_names:
+        vg = mem.vertex_groups.get(name)
+        if not vg:
+            continue
+        for v in mem.data.vertices:
+            for g in v.groups:
+                if g.group == vg.index:
+                    indices.add(v.index)
+    return indices
+
+
+def _ladder_memory_center(mem, ladder_idx):
+    import mathutils
+    indices = _ladder_memory_vertex_indices(mem, ladder_idx)
+    if not indices:
+        return None
+    center = mathutils.Vector((0.0, 0.0, 0.0))
+    for vi in indices:
+        center += mem.data.vertices[vi].co
+    return center / len(indices)
+
+
+def _finish_ladder_group_move(context, ladder_idx):
+    mem = geometry.get_memory_object()
+    if not mem or ladder_idx <= 0:
+        return
+
+    old_center = getattr(context.scene, "dgm_moving_memory_ladder_center", None)
+    new_center = _ladder_memory_center(mem, ladder_idx)
+    if old_center is None or new_center is None:
+        return
+
+    import mathutils
+    old_center = mathutils.Vector(old_center)
+    local_delta = new_center - old_center
+    if local_delta.length <= 0.000001:
+        return
+
+    world_delta = mem.matrix_world.to_3x3() @ local_delta
+    vg_obj = bpy.data.objects.get("View Geometry.ladder{}".format(ladder_idx))
+    if vg_obj:
+        vg_obj.location += world_delta
+
+
+class DGM_OT_memory_move_ladder(bpy.types.Operator):
+    """Move all memory points of one ladder together and sync its View Geometry."""
+    bl_idname = "dgm.memory_move_ladder"
+    bl_label = "Move Ladder"
+    bl_description = "Move this ladder's memory points together; View Geometry is synced when you finish"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    ladder_idx: bpy.props.IntProperty(default=1, min=1, max=5)
+
+    def execute(self, context):
+        mem = geometry.get_memory_object()
+        if not mem:
+            self.report({'ERROR'}, "No Memory LOD found")
+            return {'CANCELLED'}
+
+        indices = _ladder_memory_vertex_indices(mem, self.ladder_idx)
+        if not indices:
+            self.report({'WARNING'}, "No ladder{} points found".format(self.ladder_idx))
+            return {'CANCELLED'}
+
+        if getattr(context.scene, "dgm_moving_memory_ladder", 0) == self.ladder_idx:
+            if context.mode == 'EDIT_MESH':
+                bpy.ops.object.mode_set(mode='OBJECT')
+            _finish_ladder_group_move(context, self.ladder_idx)
+            context.scene.dgm_moving_memory_point = ""
+            context.scene.dgm_moving_memory_ladder = 0
+            try:
+                bpy.ops.wm.tool_set_by_id(name="builtin.select", space_type='VIEW_3D')
+            except Exception:
+                pass
+            return {'FINISHED'}
+
+        if context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.ops.object.select_all(action='DESELECT')
+        mem.select_set(True)
+        context.view_layer.objects.active = mem
+
+        for v in mem.data.vertices:
+            v.select = (v.index in indices)
+
+        center = _ladder_memory_center(mem, self.ladder_idx)
+        if center is not None:
+            context.scene.dgm_moving_memory_ladder_center = tuple(center)
+
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_mode(type='VERT')
+
+        try:
+            bpy.ops.wm.tool_set_by_id(name="builtin.move", space_type='VIEW_3D')
+        except Exception:
+            pass
+
+        context.scene.dgm_moving_memory_point = ""
+        context.scene.dgm_moving_memory_ladder = self.ladder_idx
+
+        if not bpy.app.timers.is_registered(_poll_memory_move_exit):
+            bpy.app.timers.register(_poll_memory_move_exit, first_interval=0.2)
+
+        return {'FINISHED'}
+
+
+class DGM_OT_memory_move_lid_axis(bpy.types.Operator):
+    """Move both memory points of one lid axis together."""
+    bl_idname = "dgm.memory_move_lid_axis"
+    bl_label = "Move Lid Axis"
+    bl_description = "Move both points of this lid axis together"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    lid_idx: bpy.props.IntProperty(default=1, min=1, max=8)
+
+    def execute(self, context):
+        mem = geometry.get_memory_object()
+        if not mem:
+            self.report({'ERROR'}, "No Memory LOD found")
+            return {'CANCELLED'}
+
+        indices = _memory_vertex_indices_for_names(mem, _lid_axis_point_names(self.lid_idx))
+        if not indices:
+            self.report({'WARNING'}, "No Lid axis {} points found".format(self.lid_idx))
+            return {'CANCELLED'}
+
+        active_key = "lid_axis_{}".format(self.lid_idx)
+        if getattr(context.scene, "dgm_moving_memory_point", "") == active_key:
+            if context.mode == 'EDIT_MESH':
+                bpy.ops.object.mode_set(mode='OBJECT')
+            context.scene.dgm_moving_memory_point = ""
+            context.scene.dgm_moving_memory_ladder = 0
+            try:
+                bpy.ops.wm.tool_set_by_id(name="builtin.select", space_type='VIEW_3D')
+            except Exception:
+                pass
+            return {'FINISHED'}
+
+        if context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.ops.object.select_all(action='DESELECT')
+        mem.select_set(True)
+        context.view_layer.objects.active = mem
+
+        for v in mem.data.vertices:
+            v.select = (v.index in indices)
+
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_mode(type='VERT')
+
+        try:
+            bpy.ops.wm.tool_set_by_id(name="builtin.move", space_type='VIEW_3D')
+        except Exception:
+            pass
+
+        context.scene.dgm_moving_memory_point = active_key
+        context.scene.dgm_moving_memory_ladder = 0
+
+        if not bpy.app.timers.is_registered(_poll_memory_move_exit):
+            bpy.app.timers.register(_poll_memory_move_exit, first_interval=0.2)
+
+        return {'FINISHED'}
+
+
+class DGM_OT_memory_move_building_door(bpy.types.Operator):
+    """Move all Memory LOD points for one building door together."""
+    bl_idname = "dgm.memory_move_building_door"
+    bl_label = "Move Door Axis"
+    bl_description = "Move doorN, doorN_action and doorN_axis together"
+    bl_options = {'REGISTER', 'UNDO'}
+
+    door_idx: bpy.props.IntProperty(default=1, min=1, max=8)
+
+    def execute(self, context):
+        mem = geometry.get_memory_object()
+        if not mem:
+            self.report({'ERROR'}, "No Memory LOD found")
+            return {'CANCELLED'}
+
+        indices = _memory_vertex_indices_for_names(mem, _building_door_point_names(self.door_idx))
+        if not indices:
+            self.report({'WARNING'}, "No Door axis {} points found".format(self.door_idx))
+            return {'CANCELLED'}
+
+        active_key = "building_door_{}".format(self.door_idx)
+        if getattr(context.scene, "dgm_moving_memory_point", "") == active_key:
+            if context.mode == 'EDIT_MESH':
+                bpy.ops.object.mode_set(mode='OBJECT')
+            context.scene.dgm_moving_memory_point = ""
+            context.scene.dgm_moving_memory_ladder = 0
+            try:
+                bpy.ops.wm.tool_set_by_id(name="builtin.select", space_type='VIEW_3D')
+            except Exception:
+                pass
+            return {'FINISHED'}
+
+        if context.mode != 'OBJECT':
+            bpy.ops.object.mode_set(mode='OBJECT')
+        bpy.ops.object.select_all(action='DESELECT')
+        mem.select_set(True)
+        context.view_layer.objects.active = mem
+
+        for v in mem.data.vertices:
+            v.select = (v.index in indices)
+
+        bpy.ops.object.mode_set(mode='EDIT')
+        bpy.ops.mesh.select_mode(type='VERT')
+
+        try:
+            bpy.ops.wm.tool_set_by_id(name="builtin.move", space_type='VIEW_3D')
+        except Exception:
+            pass
+
+        context.scene.dgm_moving_memory_point = active_key
+        context.scene.dgm_moving_memory_ladder = 0
 
         if not bpy.app.timers.is_registered(_poll_memory_move_exit):
             bpy.app.timers.register(_poll_memory_move_exit, first_interval=0.2)
@@ -465,10 +1024,14 @@ def _poll_memory_move_exit():
     """Timer: if user left Edit Mode, clear the active move state and restore the tool."""
     try:
         scene = bpy.context.scene
-        if not scene.dgm_moving_memory_point:
+        moving_ladder = getattr(scene, "dgm_moving_memory_ladder", 0)
+        if not scene.dgm_moving_memory_point and not moving_ladder:
             return None
         if bpy.context.mode != 'EDIT_MESH':
+            if moving_ladder:
+                _finish_ladder_group_move(bpy.context, moving_ladder)
             scene.dgm_moving_memory_point = ""
+            scene.dgm_moving_memory_ladder = 0
             try:
                 bpy.ops.wm.tool_set_by_id(name="builtin.select", space_type='VIEW_3D')
             except Exception:
@@ -490,14 +1053,26 @@ def _poll_memory_move_exit():
 _DOOR_PREVIEW_PREFIX = "DGM_DoorPreview_"
 
 
-def _get_axis_midpoint_and_vector(door_idx):
+def _door_anim_prop_prefix(slot_kind, door_idx):
+    if slot_kind == 'building':
+        return 'dgm_building_door_{}'.format(door_idx)
+    return 'dgm_door_{}'.format(door_idx)
+
+
+def _get_axis_midpoint_and_vector(door_idx, slot_kind='lid'):
     """Return (midpoint Vector, axis_unit Vector) from the Memory LOD axis verts, or (None, None)."""
     import mathutils
     mem = geometry.get_memory_object()
     if not mem:
         return None, None
-    vg1 = mem.vertex_groups.get('door_{}_axis_1'.format(door_idx))
-    vg2 = mem.vertex_groups.get('door_{}_axis_2'.format(door_idx))
+    if slot_kind == 'building':
+        axis_1 = 'door{}_axis_1'.format(door_idx)
+        axis_2 = 'door{}_axis_2'.format(door_idx)
+    else:
+        axis_1 = 'lid_{}_axis_1'.format(door_idx)
+        axis_2 = 'lid_{}_axis_2'.format(door_idx)
+    vg1 = mem.vertex_groups.get(axis_1)
+    vg2 = mem.vertex_groups.get(axis_2)
     if not vg1 or not vg2:
         return None, None
 
@@ -518,26 +1093,27 @@ def _get_axis_midpoint_and_vector(door_idx):
     return mid, axis
 
 
-def _door_preview_name(door_idx):
-    return "{}Door{}".format(_DOOR_PREVIEW_PREFIX, door_idx)
+def _door_preview_name(door_idx, slot_kind='lid'):
+    return "{}{}Door{}".format(_DOOR_PREVIEW_PREFIX, slot_kind.title(), door_idx)
 
 
-def _remove_door_preview(door_idx):
-    name = _door_preview_name(door_idx)
+def _remove_door_preview(door_idx, slot_kind='lid'):
+    name = _door_preview_name(door_idx, slot_kind)
     obj = bpy.data.objects.get(name)
     if obj:
         bpy.data.objects.remove(obj, do_unlink=True)
 
 
-def _apply_preview_angle(door_idx, scene, angle):
+def _apply_preview_angle(door_idx, scene, angle, slot_kind='lid'):
     """Rotate the preview mesh to the given angle around the hinge axis from the closed position."""
     import mathutils
-    preview = bpy.data.objects.get(_door_preview_name(door_idx))
+    prefix = _door_anim_prop_prefix(slot_kind, door_idx)
+    preview = bpy.data.objects.get(_door_preview_name(door_idx, slot_kind))
     if not preview:
         return
-    orig_flat = scene.get('dgm_door_{}_orig_verts'.format(door_idx))
-    mid_list  = scene.get('dgm_door_{}_axis_mid'.format(door_idx))
-    ax_list   = scene.get('dgm_door_{}_axis_vec'.format(door_idx))
+    orig_flat = scene.get(prefix + '_orig_verts')
+    mid_list  = scene.get(prefix + '_axis_mid')
+    ax_list   = scene.get(prefix + '_axis_vec')
     if orig_flat is None or mid_list is None or ax_list is None:
         return
     mid  = mathutils.Vector(mid_list)
@@ -557,37 +1133,40 @@ def _door_preview_angle_update(self, context):
     active_idx = self.dgm_door_pose_active_idx
     if active_idx < 1:
         return
-    angle = getattr(self, 'dgm_door_{}_preview_angle'.format(active_idx), 0.0)
-    _apply_preview_angle(active_idx, self, angle)
+    slot_kind = getattr(self, 'dgm_door_pose_active_kind', 'lid')
+    prefix = _door_anim_prop_prefix(slot_kind, active_idx)
+    angle = getattr(self, prefix + '_preview_angle', 0.0)
+    _apply_preview_angle(active_idx, self, angle, slot_kind)
 
 
 class DGM_OT_door_add_geometry(bpy.types.Operator):
     bl_idname = "dgm.door_add_geometry"
-    bl_label = "Add Door Geometry"
+    bl_label = "Add Lid Geometry"
     bl_description = (
-        "Create a Geometry LOD component for each configured door, shaped as a "
-        "convex hull of the door vertex group. Existing door geometry is replaced. "
-        "Each component is set to 10kg with the door's vertex group name"
+        "Create a Geometry LOD component for each configured Container Base lid, "
+        "shaped as a convex hull of the lid vertex group. Existing lid geometry "
+        "is replaced. Each component is set to 10kg with the lid's vertex group name"
     )
     bl_options = {'REGISTER', 'UNDO'}
 
     def execute(self, context):
         created = geometry.create_door_geometry()
         if created == 0:
-            self.report({'WARNING'}, "No door vertex groups configured — set Door Geometry on each door first")
+            self.report({'WARNING'}, "No lid vertex groups configured - set Lid Geometry on each lid first")
             return {'CANCELLED'}
-        self.report({'INFO'}, "Created geometry for {} door(s)".format(created))
+        self.report({'INFO'}, "Created geometry for {} lid(s)".format(created))
         return {'FINISHED'}
 
 
 class DGM_OT_door_set_pose(bpy.types.Operator):
     """Create the door preview mesh and show the angle slider."""
     bl_idname = "dgm.door_set_pose"
-    bl_label = "Preview Door"
+    bl_label = "Preview Lid"
     bl_options = {'REGISTER', 'UNDO'}
 
     door_idx: bpy.props.IntProperty()
     pose: bpy.props.StringProperty()
+    slot_kind: bpy.props.StringProperty(default='lid')
 
     def execute(self, context):
         import mathutils
@@ -599,8 +1178,14 @@ class DGM_OT_door_set_pose(bpy.types.Operator):
             self.report({'ERROR'}, "No target object set")
             return {'CANCELLED'}
 
-        vgroup_prop = 'dgm_door_{}_vgroup'.format(self.door_idx)
+        slot_kind = self.slot_kind if self.slot_kind == 'building' else 'lid'
+        prefix = _door_anim_prop_prefix(slot_kind, self.door_idx)
+        vgroup_prop = prefix + '_vgroup'
         vgroup_name = getattr(scene, vgroup_prop, "")
+        if slot_kind == 'building' and not vgroup_name:
+            default_vgroup = "door{}".format(self.door_idx)
+            if target.vertex_groups.get(default_vgroup):
+                vgroup_name = default_vgroup
         if not vgroup_name:
             self.report({'ERROR'}, "Select a vertex group for Door {}".format(self.door_idx))
             return {'CANCELLED'}
@@ -610,12 +1195,12 @@ class DGM_OT_door_set_pose(bpy.types.Operator):
             self.report({'ERROR'}, "Vertex group '{}' not found on target".format(vgroup_name))
             return {'CANCELLED'}
 
-        mid, axis = _get_axis_midpoint_and_vector(self.door_idx)
+        mid, axis = _get_axis_midpoint_and_vector(self.door_idx, slot_kind)
         if mid is None:
             self.report({'ERROR'}, "Door {} axis points not found in Memory LOD".format(self.door_idx))
             return {'CANCELLED'}
 
-        _remove_door_preview(self.door_idx)
+        _remove_door_preview(self.door_idx, slot_kind)
 
         import bmesh as _bmesh
         bm = _bmesh.new()
@@ -630,30 +1215,31 @@ class DGM_OT_door_set_pose(bpy.types.Operator):
         bm_verts_to_del = [v for v in bm.verts if v.index not in group_verts]
         _bmesh.ops.delete(bm, geom=bm_verts_to_del, context='VERTS')
 
-        new_mesh = bpy.data.meshes.new(_door_preview_name(self.door_idx))
+        new_mesh = bpy.data.meshes.new(_door_preview_name(self.door_idx, slot_kind))
         bm.to_mesh(new_mesh)
         bm.free()
 
-        preview = bpy.data.objects.new(_door_preview_name(self.door_idx), new_mesh)
+        preview = bpy.data.objects.new(_door_preview_name(self.door_idx, slot_kind), new_mesh)
         preview.matrix_world = target.matrix_world.copy()
         context.collection.objects.link(preview)
 
         # Store closed-position world verts and axis info for angle application
         world_verts = [target.matrix_world @ v.co for v in target.data.vertices if v.index in group_verts]
-        scene['dgm_door_{}_orig_verts'.format(self.door_idx)] = [co for v in world_verts for co in v]
-        scene['dgm_door_{}_axis_mid'.format(self.door_idx)] = list(mid)
-        scene['dgm_door_{}_axis_vec'.format(self.door_idx)] = list(axis)
+        scene[prefix + '_orig_verts'] = [co for v in world_verts for co in v]
+        scene[prefix + '_axis_mid'] = list(mid)
+        scene[prefix + '_axis_vec'] = list(axis)
 
         # Seed the slider at the existing open angle so the preview starts there
-        existing = getattr(scene, 'dgm_door_{}_open_angle'.format(self.door_idx), 0.0)
-        setattr(scene, 'dgm_door_{}_preview_angle'.format(self.door_idx), existing)
-        _apply_preview_angle(self.door_idx, scene, existing)
+        existing = getattr(scene, prefix + '_open_angle', 0.0)
+        setattr(scene, prefix + '_preview_angle', existing)
+        _apply_preview_angle(self.door_idx, scene, existing, slot_kind)
 
         if context.mode != 'OBJECT':
             bpy.ops.object.mode_set(mode='OBJECT')
 
         scene.dgm_door_pose_active = True
         scene.dgm_door_pose_active_idx = self.door_idx
+        scene.dgm_door_pose_active_kind = slot_kind
 
         return {'FINISHED'}
 
@@ -666,11 +1252,14 @@ class DGM_OT_door_record_pose(bpy.types.Operator):
 
     door_idx: bpy.props.IntProperty()
     pose: bpy.props.StringProperty()
+    slot_kind: bpy.props.StringProperty(default='lid')
 
     def execute(self, context):
         scene = context.scene
-        preview_angle = getattr(scene, 'dgm_door_{}_preview_angle'.format(self.door_idx), 0.0)
-        prop = 'dgm_door_{}_{}_angle'.format(self.door_idx, self.pose)
+        slot_kind = self.slot_kind if self.slot_kind == 'building' else 'lid'
+        prefix = _door_anim_prop_prefix(slot_kind, self.door_idx)
+        preview_angle = getattr(scene, prefix + '_preview_angle', 0.0)
+        prop = '{}_{}_angle'.format(prefix, self.pose)
         setattr(scene, prop, preview_angle)
         self.report({'INFO'}, "{} angle set: {:.4f} rad ({:.1f}°)".format(
             self.pose.title(), preview_angle, math.degrees(preview_angle)))
@@ -684,11 +1273,14 @@ class DGM_OT_door_finish_pose(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     door_idx: bpy.props.IntProperty()
+    slot_kind: bpy.props.StringProperty(default='lid')
 
     def execute(self, context):
-        _remove_door_preview(self.door_idx)
+        slot_kind = self.slot_kind if self.slot_kind == 'building' else 'lid'
+        _remove_door_preview(self.door_idx, slot_kind)
         context.scene.dgm_door_pose_active = False
         context.scene.dgm_door_pose_active_idx = 0
+        context.scene.dgm_door_pose_active_kind = 'lid'
         return {'FINISHED'}
 
 
@@ -699,11 +1291,14 @@ class DGM_OT_door_cancel_pose(bpy.types.Operator):
     bl_options = {'REGISTER', 'UNDO'}
 
     door_idx: bpy.props.IntProperty()
+    slot_kind: bpy.props.StringProperty(default='lid')
 
     def execute(self, context):
-        _remove_door_preview(self.door_idx)
+        slot_kind = self.slot_kind if self.slot_kind == 'building' else 'lid'
+        _remove_door_preview(self.door_idx, slot_kind)
         context.scene.dgm_door_pose_active = False
         context.scene.dgm_door_pose_active_idx = 0
+        context.scene.dgm_door_pose_active_kind = 'lid'
         return {'FINISHED'}
 
 
@@ -1291,14 +1886,17 @@ class DGM_PT_main_panel(bpy.types.Panel):
             sub = box.box()
             sub.label(text="Building & Structure", icon='MOD_BUILD')
 
-            # Ladders — always show all 3 slots
-            sub_hrow = sub.row(align=True)
-            sub_hrow.label(text="", icon='KEYFRAME')
-            sub_hrow.label(text="Ladders")
+            def _building_group_header(parent, label, count_prop, count):
+                is_open = count > 0
+                row = parent.row(align=True)
+                row.label(text=label)
+                row.prop(scene, count_prop, text="")
+                return is_open
 
-            for li in range(1, 4):
-                prefix = "ladder{}".format(li)
-                lad_points = [
+            # Ladders
+            def _ladder_group_names(idx):
+                prefix = "ladder{}".format(idx)
+                return [
                     prefix,
                     prefix + '_bottom_front',
                     prefix + '_con',
@@ -1306,56 +1904,234 @@ class DGM_PT_main_panel(bpy.types.Panel):
                     prefix + '_dir',
                     prefix + '_top_front',
                 ]
-                lad_exists = any(geometry.memory_point_exists(n) for n in lad_points)
 
-                lrow = sub.row(align=True)
-                lrow.separator(factor=2.0)
-                dot_icon = 'KEYFRAME_HLT' if lad_exists else 'KEYFRAME'
-                lrow.label(text="", icon=dot_icon)
-                lrow.label(text="Ladder {}".format(li))
-                if lad_exists:
-                    rot_op = lrow.operator("dgm.memory_rotate_ladder", text="", icon='LOOP_FORWARDS')
-                    rot_op.ladder_idx = li
-                    del_op = lrow.operator("dgm.memory_delete_ladder", text="", icon='X')
-                    del_op.ladder_idx = li
-                else:
-                    add_op = lrow.operator("dgm.memory_add_ladder_n", text="Add")
-                    add_op.ladder_idx = li
+            ladder_count = getattr(scene, "dgm_memory_ladders_count", 1)
+            existing_ladder_indices = [
+                i for i in range(1, 6)
+                if any(geometry.memory_point_exists(n) for n in _ladder_group_names(i))
+            ]
+            if existing_ladder_indices and ladder_count < max(existing_ladder_indices):
+                ladder_count = max(existing_ladder_indices)
+                scene.dgm_memory_ladders_count = ladder_count
 
-                if lad_exists:
-                    for pt in lad_points:
-                        if not geometry.memory_point_exists(pt):
-                            continue
-                        sub_row = sub.row(align=True)
-                        sub_row.separator(factor=3.0)
-                        sub_row.label(text=pt, icon='DOT')
-                        _move_btn(sub_row, pt)
+            if _building_group_header(sub, "Ladders", "dgm_memory_ladders_count", ladder_count):
+                for li in range(1, ladder_count + 1):
+                    lad_points = _ladder_group_names(li)
+                    lad_exists = any(geometry.memory_point_exists(n) for n in lad_points)
 
-            def _door_groups(count):
-                return [
-                    ['door_{}_axis_1'.format(i), 'door_{}_axis_2'.format(i)]
-                    for i in range(1, count + 1)
-                ]
-            _mem_group_dynamic(sub, "Door Points", "dgm.memory_add_doors",
-                               "dgm_memory_doors_count", _door_groups)
+                    lrow = sub.row(align=True)
+                    lrow.separator(factor=2.0)
+                    dot_icon = 'KEYFRAME_HLT' if lad_exists else 'KEYFRAME'
+                    lrow.label(text="", icon=dot_icon)
+                    lrow.label(text="Ladder {}".format(li))
+                    if lad_exists:
+                        move_row = lrow.row(align=True)
+                        move_row.alert = (getattr(scene, "dgm_moving_memory_ladder", 0) == li)
+                        move_op = move_row.operator("dgm.memory_move_ladder", text="", icon='ORIENTATION_CURSOR')
+                        move_op.ladder_idx = li
+                        rot_op = lrow.operator("dgm.memory_rotate_ladder", text="", icon='LOOP_FORWARDS')
+                        rot_op.ladder_idx = li
+                        del_op = lrow.operator("dgm.memory_delete_ladder", text="", icon='X')
+                        del_op.ladder_idx = li
+                    else:
+                        add_op = lrow.operator("dgm.memory_add_ladder_n", text="Add")
+                        add_op.ladder_idx = li
 
-            # Door rotation setup — shown per-door when both axis points exist
-            door_count = scene.dgm_memory_doors_count
-            for di in range(1, door_count + 1):
-                axis_exists = (geometry.memory_point_exists('door_{}_axis_1'.format(di)) and
-                               geometry.memory_point_exists('door_{}_axis_2'.format(di)))
+                    if lad_exists:
+                        for pt in lad_points:
+                            if not geometry.memory_point_exists(pt):
+                                continue
+                            sub_row = sub.row(align=True)
+                            sub_row.separator(factor=3.0)
+                            sub_row.label(text=pt, icon='DOT')
+                            _move_btn(sub_row, pt)
+
+            lid_count = getattr(scene, "dgm_memory_doors_count", 1)
+            existing_lid_indices = [
+                i for i in range(1, 9)
+                if any(geometry.memory_point_exists(n) for n in [
+                    'lid_{}_axis_1'.format(i),
+                    'lid_{}_axis_2'.format(i),
+                ])
+            ]
+            if existing_lid_indices and lid_count < max(existing_lid_indices):
+                lid_count = max(existing_lid_indices)
+                scene.dgm_memory_doors_count = lid_count
+
+            show_lid_axis = _building_group_header(sub, "Lid axis", "dgm_memory_doors_count", lid_count)
+            if show_lid_axis:
+                for di in range(1, lid_count + 1):
+                    lid_points = ['lid_{}_axis_1'.format(di), 'lid_{}_axis_2'.format(di)]
+                    lid_exists = any(geometry.memory_point_exists(n) for n in lid_points)
+
+                    lrow = sub.row(align=True)
+                    lrow.separator(factor=2.0)
+                    lrow.label(text="", icon='KEYFRAME_HLT' if lid_exists else 'KEYFRAME')
+                    lrow.label(text="Lid axis {}".format(di))
+                    if lid_exists:
+                        move_row = lrow.row(align=True)
+                        move_row.alert = (getattr(scene, "dgm_moving_memory_point", "") == "lid_axis_{}".format(di))
+                        move_op = move_row.operator("dgm.memory_move_lid_axis", text="", icon='ORIENTATION_CURSOR')
+                        move_op.lid_idx = di
+                        del_op = lrow.operator("dgm.memory_delete_lid_axis", text="", icon='X')
+                        del_op.lid_idx = di
+                    else:
+                        add_op = lrow.operator("dgm.memory_add_lid_axis_n", text="Add")
+                        add_op.lid_idx = di
+
+                    if lid_exists:
+                        for pt in lid_points:
+                            if not geometry.memory_point_exists(pt):
+                                continue
+                            sub_row = sub.row(align=True)
+                            sub_row.separator(factor=3.0)
+                            sub_row.label(text=pt, icon='DOT')
+                            _move_btn(sub_row, pt)
+
+            building_door_count = getattr(scene, "dgm_memory_building_doors_count", 1)
+            existing_building_door_indices = [
+                i for i in range(1, 9)
+                if any(geometry.memory_point_exists(n) for n in _building_door_point_names(i))
+            ]
+            if existing_building_door_indices and building_door_count < max(existing_building_door_indices):
+                building_door_count = max(existing_building_door_indices)
+                scene.dgm_memory_building_doors_count = building_door_count
+
+            has_door_selection = _target_has_door_selection(target)
+
+            show_door_axis = _building_group_header(sub, "Door axis", "dgm_memory_building_doors_count", building_door_count)
+            if show_door_axis:
+                for di in range(1, building_door_count + 1):
+                    door_points = _building_door_point_names(di)
+                    door_exists = any(geometry.memory_point_exists(n) for n in door_points)
+
+                    drow = sub.row(align=True)
+                    drow.separator(factor=2.0)
+                    drow.label(text="", icon='KEYFRAME_HLT' if door_exists else 'KEYFRAME')
+                    drow.label(text="Door axis {}".format(di))
+                    if door_exists:
+                        move_row = drow.row(align=True)
+                        move_row.alert = (getattr(scene, "dgm_moving_memory_point", "") == "building_door_{}".format(di))
+                        move_op = move_row.operator("dgm.memory_move_building_door", text="", icon='ORIENTATION_CURSOR')
+                        move_op.door_idx = di
+                        rot_op = drow.operator("dgm.memory_rotate_building_door", text="", icon='LOOP_FORWARDS')
+                        rot_op.door_idx = di
+                        del_op = drow.operator("dgm.memory_delete_building_door", text="", icon='X')
+                        del_op.door_idx = di
+                    else:
+                        has_numbered_door = _target_has_numbered_door_selection(target, di)
+                        add_row = drow.row(align=True)
+                        add_row.enabled = has_door_selection and has_numbered_door
+                        add_op = add_row.operator("dgm.memory_add_building_door_n", text="Add")
+                        add_op.door_idx = di
+
+                    if door_exists:
+                        for pt in door_points:
+                            if not geometry.memory_point_exists(pt):
+                                continue
+                            sub_row = sub.row(align=True)
+                            sub_row.separator(factor=3.0)
+                            sub_row.label(text=pt, icon='DOT')
+                            _move_btn(sub_row, pt)
+
+                for di in range(1, building_door_count + 1):
+                    axis_exists = (geometry.memory_point_exists('door{}_axis_1'.format(di)) and
+                                   geometry.memory_point_exists('door{}_axis_2'.format(di)))
+                    if not axis_exists:
+                        continue
+
+                    target = scene.dgm_target_object
+                    dbox = sub.box()
+                    dbox.label(text="Door {} - Rotation Setup".format(di), icon='CON_ROTLIKE')
+
+                    vgroup_prop = 'dgm_building_door_{}_vgroup'.format(di)
+                    default_vgroup = "door{}".format(di)
+                    has_default_vgroup = _target_has_numbered_door_selection(target, di)
+
+                    if target and target.type == 'MESH' and target.vertex_groups:
+                        dbox.prop_search(scene, vgroup_prop,
+                                         target, "vertex_groups",
+                                         text="Door Geometry")
+                        if not getattr(scene, vgroup_prop, "") and has_default_vgroup:
+                            dbox.label(text="Using {}".format(default_vgroup), icon='INFO')
+                    else:
+                        dbox.label(text="Set a target object with vertex groups", icon='ERROR')
+
+                    pose_active = (
+                        scene.dgm_door_pose_active and
+                        scene.dgm_door_pose_active_idx == di and
+                        getattr(scene, 'dgm_door_pose_active_kind', 'lid') == 'building'
+                    )
+                    closed_angle = getattr(scene, 'dgm_building_door_{}_closed_angle'.format(di), 0.0)
+                    open_angle = getattr(scene, 'dgm_building_door_{}_open_angle'.format(di), 1.4)
+
+                    if pose_active:
+                        dbox.prop(scene, 'dgm_building_door_{}_preview_angle'.format(di),
+                                  text="Preview Angle (rad)")
+                        preview_angle = getattr(scene, 'dgm_building_door_{}_preview_angle'.format(di), 0.0)
+                        dbox.label(text="{:.4f} rad  ({:.1f} deg)".format(
+                            preview_angle, math.degrees(preview_angle)), icon='INFO')
+
+                        angle_col = dbox.column(align=True)
+                        crow = angle_col.row(align=True)
+                        crow.label(text="Closed: {:.1f} deg".format(math.degrees(closed_angle)))
+                        rec_c = crow.operator("dgm.door_record_pose", text="Set as Closed", icon='CHECKMARK')
+                        rec_c.door_idx = di
+                        rec_c.pose = 'closed'
+                        rec_c.slot_kind = 'building'
+
+                        orow = angle_col.row(align=True)
+                        orow.label(text="Open:   {:.1f} deg".format(math.degrees(open_angle)))
+                        rec_o = orow.operator("dgm.door_record_pose", text="Set as Open", icon='CHECKMARK')
+                        rec_o.door_idx = di
+                        rec_o.pose = 'open'
+                        rec_o.slot_kind = 'building'
+
+                        dbox.separator()
+                        btn_row = dbox.row(align=True)
+                        fin_op = btn_row.operator("dgm.door_finish_pose", text="Done", icon='CHECKMARK')
+                        fin_op.door_idx = di
+                        fin_op.slot_kind = 'building'
+                        can_op = btn_row.operator("dgm.door_cancel_pose", text="Cancel", icon='X')
+                        can_op.door_idx = di
+                        can_op.slot_kind = 'building'
+                    else:
+                        angle_col = dbox.column(align=True)
+                        angle_col.prop(scene, 'dgm_building_door_{}_closed_angle'.format(di), text="Closed (rad)")
+                        angle_col.prop(scene, 'dgm_building_door_{}_open_angle'.format(di), text="Open (rad)")
+                        dbox.label(text="Closed: {:.1f} deg   Open: {:.1f} deg".format(
+                            math.degrees(closed_angle), math.degrees(open_angle)), icon='INFO')
+
+                        dbox.prop(scene, 'dgm_building_door_{}_anim_period'.format(di), text="Anim Period (s)")
+
+                        enter_row = dbox.row(align=True)
+                        vgroup_set = bool(getattr(scene, vgroup_prop, "")) or has_default_vgroup
+                        enter_row.enabled = vgroup_set
+                        enter_op = enter_row.operator("dgm.door_set_pose",
+                                                      text="Enter Rotate Mode", icon='CON_ROTLIKE')
+                        enter_op.door_idx = di
+                        enter_op.pose = 'open'
+                        enter_op.slot_kind = 'building'
+                        if not vgroup_set:
+                            dbox.label(text="Select Door Geometry above first", icon='ERROR')
+
+            # Lid rotation setup - shown per lid when both axis points exist
+            door_count = lid_count
+            for di in (range(1, door_count + 1) if show_lid_axis else []):
+                axis_exists = (geometry.memory_point_exists('lid_{}_axis_1'.format(di)) and
+                               geometry.memory_point_exists('lid_{}_axis_2'.format(di)))
                 if not axis_exists:
                     continue
 
                 target = scene.dgm_target_object
                 dbox = sub.box()
-                dbox.label(text="Door {} — Rotation Setup".format(di), icon='CON_ROTLIKE')
+                dbox.label(text="Lid {} - Rotation Setup".format(di), icon='CON_ROTLIKE')
 
                 vgroup_prop = 'dgm_door_{}_vgroup'.format(di)
                 if target and target.type == 'MESH' and target.vertex_groups:
                     dbox.prop_search(scene, vgroup_prop,
                                      target, "vertex_groups",
-                                     text="Door Geometry")
+                                     text="Lid Geometry")
                 else:
                     dbox.label(text="Set a target object with vertex groups", icon='ERROR')
 
@@ -1377,19 +2153,23 @@ class DGM_PT_main_panel(bpy.types.Panel):
                     rec_c = crow.operator("dgm.door_record_pose", text="Set as Closed", icon='CHECKMARK')
                     rec_c.door_idx = di
                     rec_c.pose = 'closed'
+                    rec_c.slot_kind = 'lid'
 
                     orow = angle_col.row(align=True)
                     orow.label(text="Open:   {:.1f}°".format(math.degrees(open_angle)))
                     rec_o = orow.operator("dgm.door_record_pose", text="Set as Open", icon='CHECKMARK')
                     rec_o.door_idx = di
                     rec_o.pose = 'open'
+                    rec_o.slot_kind = 'lid'
 
                     dbox.separator()
                     btn_row = dbox.row(align=True)
                     fin_op = btn_row.operator("dgm.door_finish_pose", text="Done", icon='CHECKMARK')
                     fin_op.door_idx = di
+                    fin_op.slot_kind = 'lid'
                     can_op = btn_row.operator("dgm.door_cancel_pose", text="Cancel", icon='X')
                     can_op.door_idx = di
+                    can_op.slot_kind = 'lid'
                 else:
                     angle_col = dbox.column(align=True)
                     angle_col.prop(scene, 'dgm_door_{}_closed_angle'.format(di), text="Closed (rad)")
@@ -1406,18 +2186,19 @@ class DGM_PT_main_panel(bpy.types.Panel):
                                                   text="Enter Rotate Mode", icon='CON_ROTLIKE')
                     enter_op.door_idx = di
                     enter_op.pose = 'open'
+                    enter_op.slot_kind = 'lid'
                     if not vgroup_set:
-                        dbox.label(text="Select Door Geometry above first", icon='ERROR')
+                        dbox.label(text="Select Lid Geometry above first", icon='ERROR')
 
 
-            # Add Door Geometry button — shown if any door has a vgroup set
+            # Add Lid Geometry button - shown if any lid has a vgroup set
             any_door_vgroup = any(
                 bool(getattr(scene, 'dgm_door_{}_vgroup'.format(di), "").strip())
                 for di in range(1, door_count + 1)
             )
             if any_door_vgroup:
                 sub.separator()
-                sub.operator("dgm.door_add_geometry", text="Add Door Geometry", icon='MESH_DATA')
+                sub.operator("dgm.door_add_geometry", text="Add Lid Geometry", icon='MESH_DATA')
 
             sub = box.box()
             sub.label(text="Effects & Lighting", icon='LIGHT')
@@ -1460,30 +2241,73 @@ class DGM_PT_main_panel(bpy.types.Panel):
         if is_open:
             col = box.column(align=True)
 
+            col.label(text="Config Template:")
+            col.prop(scene, "dgm_config_template", text="")
+            template = getattr(scene, "dgm_config_template", "container_base")
+            recommended_model_cfg = _recommended_model_cfg_for_template(template)
+            has_lid_doors = (geometry.memory_point_exists('lid_1_axis_1') or
+                             geometry.memory_point_exists('lid_1_axis_2'))
+
             # P3D path row — text field showing current path + folder button to pick
             p3d_row = col.row(align=True)
             p3d_row.prop(scene, "dgm_p3d_path", text="P3D")
             p3d_row.operator("dgm.pick_p3d_path", text="", icon='FILE_FOLDER')
 
-            # Textures path — only when at least one selection is marked for baking
+            # Textures path is used when at least one selection is marked for baking
             has_bake = (target and hasattr(target, 'dgm_props') and
                         any(sm.bake_texture for sm in target.dgm_props.selection_mats))
             if has_bake:
-                col.prop(scene, "dgm_textures_path", text="Textures")
+                tex_row = col.row(align=True)
+                tex_row.label(text="Textures")
+                tex_path = tex_row.row(align=True)
+                tex_path.enabled = getattr(scene, "dgm_override_textures_path", False)
+                tex_path.prop(scene, "dgm_textures_path", text="")
+                tex_row.prop(scene, "dgm_override_textures_path", text="Custom")
+
+            if template == 'container_base' and has_lid_doors:
+                scripts_row = col.row(align=True)
+                scripts_row.label(text="Scripts")
+                scripts_path = scripts_row.row(align=True)
+                scripts_path.enabled = getattr(scene, "dgm_override_scripts_path", False)
+                scripts_path.prop(scene, "dgm_scripts_path", text="")
+                scripts_row.prop(scene, "dgm_override_scripts_path", text="Custom")
+                scripts_raw = getattr(scene, "dgm_scripts_path", "").strip().rstrip("\\/")
+                if scripts_raw and scripts_raw.split("\\")[-1].split("/")[-1].lower() != "scripts":
+                    warn = col.row()
+                    warn.alert = True
+                    warn.label(text="Scripts path must end with 'scripts'", icon='ERROR')
 
             col.separator()
-            col.label(text="Config Template:")
-            col.prop(scene, "dgm_config_template", text="")
+            config_row = col.row()
+            config_row.enabled = (template != 'none')
+            config_row.prop(scene, "dgm_export_config_cpp")
+            if template != 'none' and not getattr(scene, "dgm_export_config_cpp", True):
+                warn = col.row()
+                warn.alert = True
+                warn.label(text="config.cpp export is disabled", icon='ERROR')
 
             # Scripts path — only relevant for container_base template
-            if getattr(scene, "dgm_config_template", "container_base") == 'container_base':
-                has_doors = (geometry.memory_point_exists('door_1_axis_1') or
-                             geometry.memory_point_exists('door_1_axis_2'))
-                if has_doors:
-                    col.prop(scene, "dgm_scripts_path", text="Scripts")
+            if template == 'container_base':
+                if has_lid_doors:
+                    col.prop(scene, "dgm_export_scripts")
+                    if not getattr(scene, "dgm_export_scripts", True):
+                        warn = col.row()
+                        warn.alert = True
+                        warn.label(text="Container Base doors usually need scripts", icon='ERROR')
 
             col.separator()
-            col.prop(scene, "dgm_write_model_cfg")
+            model_row = col.row()
+            model_row.enabled = (template != 'none')
+            model_row.prop(scene, "dgm_write_model_cfg")
+            model_cfg_enabled = getattr(scene, "dgm_write_model_cfg", True)
+            if template != 'none' and recommended_model_cfg and not model_cfg_enabled:
+                warn = col.row()
+                warn.alert = True
+                warn.label(text="This template usually needs model.cfg", icon='ERROR')
+            elif template != 'none' and not recommended_model_cfg and model_cfg_enabled:
+                warn = col.row()
+                warn.alert = True
+                warn.label(text="model.cfg is usually not needed for this template", icon='INFO')
             col.operator("dgm.export_p3d", text="Export", icon='EXPORT')
             box.separator()
             box.operator("dgm.check_update", text="Check for Updates", icon='URL')
@@ -1526,21 +2350,53 @@ def register_scene_props():
     )
 
     # Memory point counts
-    S.dgm_memory_doors_count  = bpy.props.IntProperty(name="Doors",   default=1, min=1, max=8)
+    S.dgm_memory_doors_count  = bpy.props.IntProperty(name="Doors",   default=0, min=0, max=8,
+                                                      update=_memory_lid_count_update)
     S.dgm_memory_lights_count = bpy.props.IntProperty(name="Lights",  default=1, min=1, max=8)
-    S.dgm_memory_ladders_count = bpy.props.IntProperty(name="Ladders", default=1, min=1, max=3)
+    S.dgm_memory_ladders_count = bpy.props.IntProperty(name="Ladders", default=0, min=0, max=5,
+                                                       update=_memory_ladders_count_update)
+    S.dgm_memory_building_doors_count = bpy.props.IntProperty(name="Doors", default=0, min=0, max=8,
+                                                              update=_memory_building_doors_count_update)
 
     # Active move point name — empty string means none active
     S.dgm_moving_memory_point = bpy.props.StringProperty(name="Moving Memory Point", default="")
+    S.dgm_moving_memory_ladder = bpy.props.IntProperty(name="Moving Memory Ladder", default=0, min=0, max=5)
+    S.dgm_moving_memory_ladder_center = bpy.props.FloatVectorProperty(
+        name="Moving Memory Ladder Center", size=3, default=(0.0, 0.0, 0.0)
+    )
 
     # Door pose capture state
     S.dgm_door_pose_active     = bpy.props.BoolProperty(default=False)
     S.dgm_door_pose_active_idx = bpy.props.IntProperty(default=0)
+    S.dgm_door_pose_active_kind = bpy.props.StringProperty(default='lid')
 
     # Per-door config properties (supports up to 8 doors)
     for _di in range(1, 9):
-        setattr(S, 'dgm_door_{}_vgroup'.format(_di),
+        setattr(S, 'dgm_memory_building_door_{}_orientation'.format(_di),
+                bpy.props.EnumProperty(
+                    name="Door {} Memory Orientation".format(_di),
+                    items=[
+                        ('Y', "Front/Back", "Door lies on a front/back wall"),
+                        ('X', "Side", "Door lies on a side wall"),
+                    ],
+                    default='Y'))
+        setattr(S, 'dgm_building_door_{}_vgroup'.format(_di),
                 bpy.props.StringProperty(name="Door {} Vertex Group".format(_di), default=""))
+        setattr(S, 'dgm_building_door_{}_closed_angle'.format(_di),
+                bpy.props.FloatProperty(name="Closed Angle (rad)", default=0.0,
+                                        soft_min=-6.2832, soft_max=6.2832))
+        setattr(S, 'dgm_building_door_{}_open_angle'.format(_di),
+                bpy.props.FloatProperty(name="Open Angle (rad)", default=1.4,
+                                        soft_min=-6.2832, soft_max=6.2832))
+        setattr(S, 'dgm_building_door_{}_preview_angle'.format(_di),
+                bpy.props.FloatProperty(name="Preview Angle (rad)", default=0.0,
+                                        soft_min=-6.2832, soft_max=6.2832,
+                                        update=_door_preview_angle_update))
+        setattr(S, 'dgm_building_door_{}_anim_period'.format(_di),
+                bpy.props.FloatProperty(name="Anim Period (s)", default=1.0,
+                                        min=0.01, max=10.0))
+        setattr(S, 'dgm_door_{}_vgroup'.format(_di),
+                bpy.props.StringProperty(name="Lid {} Vertex Group".format(_di), default=""))
         setattr(S, 'dgm_door_{}_closed_angle'.format(_di),
                 bpy.props.FloatProperty(name="Closed Angle (rad)", default=0.0,
                                         soft_min=-6.2832, soft_max=6.2832))
@@ -1552,34 +2408,59 @@ def register_scene_props():
                                         soft_min=-6.2832, soft_max=6.2832,
                                         update=_door_preview_angle_update))
         setattr(S, 'dgm_door_{}_anim_period'.format(_di),
-                bpy.props.FloatProperty(name="Anim Period (s)", default=0.15,
+                bpy.props.FloatProperty(name="Anim Period (s)", default=1.0,
                                         min=0.01, max=10.0))
 
     # Export paths
     S.dgm_p3d_path = bpy.props.StringProperty(
         name="P3D", subtype='NONE', default="",
-        description="Set P3D save path — click the folder icon to browse",
+        description="Choose the target folder/path for P3D or mod export",
+        update=_p3d_path_update,
     )
     S.dgm_textures_path = bpy.props.StringProperty(
         name="Textures", subtype='DIR_PATH', default="",
-        description="Select folder for exported textures",
+        description="Texture export folder. Default is the P3D folder plus data",
     )
     S.dgm_scripts_path = bpy.props.StringProperty(
         name="Scripts", subtype='DIR_PATH', default="",
-        description="Select folder for exported scripts",
+        description="Script export folder. Default is the P3D folder plus scripts, and the path must end with scripts",
+    )
+    S.dgm_override_textures_path = bpy.props.BoolProperty(
+        name="Override Textures",
+        description="Allow editing the texture export path instead of using P3D folder plus data",
+        default=False,
+        update=_override_textures_path_update,
+    )
+    S.dgm_override_scripts_path = bpy.props.BoolProperty(
+        name="Override Scripts",
+        description="Allow editing the script export path instead of using P3D folder plus scripts",
+        default=False,
+        update=_override_scripts_path_update,
     )
     S.dgm_config_template = bpy.props.EnumProperty(
         name="Config Template",
         description="Which config.cpp template to write on export",
         items=[
-            ('none',             "None",              "Do not write a config.cpp"),
+            ('none',             "None",              "Do not write config files. Only P3D model"),
             ('container_base',   "Container Base",    "Storage container — inherits Container_Base"),
             ('house_no_destruct',"House (Static Obj)","Static world object — inherits HouseNoDestruct"),
+            ('object_with_doors',"Object with doors", "HouseNoDestruct building with DayZ door config"),
         ],
         default='container_base',
+        update=_config_template_update,
+    )
+    S.dgm_export_config_cpp = bpy.props.BoolProperty(
+        name="Export config.cpp",
+        description="Write config.cpp from the selected template",
+        default=True,
+    )
+    S.dgm_export_scripts = bpy.props.BoolProperty(
+        name="Export scripts",
+        description="Write scripts required by the selected template",
+        default=True,
     )
     S.dgm_write_model_cfg = bpy.props.BoolProperty(
-        name="Generate model.cfg",
+        name="Export model.cfg",
         description="Write a model.cfg file alongside the P3D on export",
         default=True,
     )
@@ -1604,14 +2485,21 @@ def unregister_scene_props():
         "dgm_show_selections", "dgm_show_generators", "dgm_show_ladder_gen", "dgm_show_cabin_gen", "dgm_show_collision", "dgm_show_interior", "dgm_show_terrain",
         "dgm_show_memory", "dgm_show_lods", "dgm_show_export", "dgm_cta_baking_open",
         "dgm_fire_quality",
-        "dgm_memory_doors_count", "dgm_memory_lights_count", "dgm_memory_ladders_count",
-        "dgm_moving_memory_point",
-        "dgm_door_pose_active", "dgm_door_pose_active_idx",
-        "dgm_p3d_path", "dgm_textures_path", "dgm_scripts_path", "dgm_config_template",
-        "dgm_write_model_cfg",
+        "dgm_memory_doors_count", "dgm_memory_lights_count", "dgm_memory_ladders_count", "dgm_memory_building_doors_count",
+        "dgm_moving_memory_point", "dgm_moving_memory_ladder", "dgm_moving_memory_ladder_center",
+        "dgm_door_pose_active", "dgm_door_pose_active_idx", "dgm_door_pose_active_kind",
+        "dgm_p3d_path", "dgm_textures_path", "dgm_scripts_path",
+        "dgm_override_textures_path", "dgm_override_scripts_path", "dgm_config_template",
+        "dgm_export_config_cpp", "dgm_export_scripts", "dgm_write_model_cfg",
     ]
     for _di in range(1, 9):
         props += [
+            'dgm_memory_building_door_{}_orientation'.format(_di),
+            'dgm_building_door_{}_vgroup'.format(_di),
+            'dgm_building_door_{}_closed_angle'.format(_di),
+            'dgm_building_door_{}_open_angle'.format(_di),
+            'dgm_building_door_{}_preview_angle'.format(_di),
+            'dgm_building_door_{}_anim_period'.format(_di),
             'dgm_door_{}_vgroup'.format(_di),
             'dgm_door_{}_closed_angle'.format(_di),
             'dgm_door_{}_open_angle'.format(_di),
@@ -1634,13 +2522,13 @@ def unregister_scene_props():
 # ---------------------------------------------------------------------------
 
 class DGM_OT_memory_add_ladder_n(bpy.types.Operator):
-    """Add a ladder group with a specific index (ladder1, ladder2, ladder3)."""
+    """Add a ladder group with a specific index (ladder1, ladder2, ... ladder5)."""
     bl_idname = "dgm.memory_add_ladder_n"
     bl_label = "Add Ladder"
     bl_description = "Add memory points and view geometry for this ladder slot"
     bl_options = {'REGISTER', 'UNDO'}
 
-    ladder_idx: bpy.props.IntProperty(default=1, min=1, max=3)
+    ladder_idx: bpy.props.IntProperty(default=1, min=1, max=5)
 
     def execute(self, context):
         # Auto-select the matching DZ_Ladder_N object for this slot if it exists
@@ -1670,21 +2558,21 @@ class DGM_OT_memory_delete_ladder(bpy.types.Operator):
     bl_description = "Remove all memory points and view geometry for this ladder group"
     bl_options = {'REGISTER', 'UNDO'}
 
-    ladder_idx: bpy.props.IntProperty(default=1, min=1, max=3)
+    ladder_idx: bpy.props.IntProperty(default=1, min=1, max=5)
 
     def execute(self, context):
         # Enforce sequential order — cannot delete if a higher ladder exists
-        if self.ladder_idx < 3:
-            next_prefix = "ladder{}".format(self.ladder_idx + 1)
+        for next_idx in range(self.ladder_idx + 1, 6):
+            next_prefix = "ladder{}".format(next_idx)
             if geometry.memory_point_exists(next_prefix):
                 self.report({'ERROR'},
-                    "Delete Ladder {} first".format(self.ladder_idx + 1))
+                    "Delete Ladder {} first".format(next_idx))
                 return {'CANCELLED'}
         geometry.remove_memory_ladder(ladder_idx=self.ladder_idx)
         # Keep the count spinner in sync
         scene = context.scene
         if scene.dgm_memory_ladders_count > self.ladder_idx - 1:
-            scene.dgm_memory_ladders_count = max(1, self.ladder_idx - 1)
+            scene.dgm_memory_ladders_count = max(0, self.ladder_idx - 1)
         self.report({'INFO'}, "Ladder {} deleted".format(self.ladder_idx))
         return {'FINISHED'}
 
@@ -1696,7 +2584,7 @@ class DGM_OT_memory_rotate_ladder(bpy.types.Operator):
     bl_description = "Rotate this ladder group 90° around the Z axis"
     bl_options = {'REGISTER', 'UNDO'}
 
-    ladder_idx: bpy.props.IntProperty(default=1, min=1, max=3)
+    ladder_idx: bpy.props.IntProperty(default=1, min=1, max=5)
 
     def execute(self, context):
         import math
@@ -1785,7 +2673,16 @@ operator_classes = (
     DGM_OT_memory_add_lights,
     DGM_OT_memory_add_damage,
     DGM_OT_memory_add_doors,
+    DGM_OT_memory_add_lid_axis_n,
+    DGM_OT_memory_delete_lid_axis,
+    DGM_OT_memory_add_building_door_n,
+    DGM_OT_memory_delete_building_door,
+    DGM_OT_memory_rotate_building_door,
+    DGM_OT_set_default_export_subdir,
     DGM_OT_memory_move_point,
+    DGM_OT_memory_move_ladder,
+    DGM_OT_memory_move_lid_axis,
+    DGM_OT_memory_move_building_door,
     DGM_OT_door_add_geometry,
     DGM_OT_door_set_pose,
     DGM_OT_door_record_pose,

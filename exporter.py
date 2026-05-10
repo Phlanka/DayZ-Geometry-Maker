@@ -12,7 +12,7 @@ import os
 
 from .properties import GEOMETRY_LODS, needs_resolution, lod_name
 from .modelcfg import write_model_cfg
-from . import baker_bridge
+from . import baker_bridge, geometry
 
 
 # ---------------------------------------------------------------------------
@@ -526,6 +526,28 @@ def _apply_modifiers(obj):
         bpy.ops.object.modifier_apply(modifier=mod.name)
 
 
+def _merge_axis_pair_on_duplicate(dup, name1, name2, merged_name):
+    vg1 = dup.vertex_groups.get(name1)
+    vg2 = dup.vertex_groups.get(name2)
+    if not vg1 or not vg2:
+        return
+
+    indices = set()
+    for v in dup.data.vertices:
+        for g in v.groups:
+            if g.group in (vg1.index, vg2.index):
+                indices.add(v.index)
+
+    if not indices:
+        return
+
+    merged_vg = dup.vertex_groups.get(merged_name) or dup.vertex_groups.new(name=merged_name)
+    merged_vg.add(list(indices), 1.0, 'REPLACE')
+
+    for vg in (vg1, vg2):
+        dup.vertex_groups.remove(vg)
+
+
 def _merge_door_axes_on_duplicate(scene, dup):
     """
     On the export duplicate of the Memory LOD, merge each door's axis_1/axis_2
@@ -537,26 +559,20 @@ def _merge_door_axes_on_duplicate(scene, dup):
         door_vg = getattr(scene, 'dgm_door_{}_vgroup'.format(di), "").strip()
         if not door_vg:
             continue
-        vg1 = dup.vertex_groups.get('door_{}_axis_1'.format(di))
-        vg2 = dup.vertex_groups.get('door_{}_axis_2'.format(di))
-        if not vg1 or not vg2:
-            continue
+        _merge_axis_pair_on_duplicate(
+            dup,
+            'lid_{}_axis_1'.format(di),
+            'lid_{}_axis_2'.format(di),
+            '{}_axis'.format(door_vg),
+        )
 
-        indices = set()
-        for v in dup.data.vertices:
-            for g in v.groups:
-                if g.group in (vg1.index, vg2.index):
-                    indices.add(v.index)
-
-        if not indices:
-            continue
-
-        merged_name = '{}_axis'.format(door_vg)
-        merged_vg = dup.vertex_groups.get(merged_name) or dup.vertex_groups.new(name=merged_name)
-        merged_vg.add(list(indices), 1.0, 'REPLACE')
-
-        for vg in (vg1, vg2):
-            dup.vertex_groups.remove(vg)
+    for di in range(1, 9):
+        _merge_axis_pair_on_duplicate(
+            dup,
+            'door{}_axis_1'.format(di),
+            'door{}_axis_2'.format(di),
+            'door{}_axis'.format(di),
+        )
 
 
 def export_objects_as_p3d(operator, filepath, objects,
@@ -668,7 +684,7 @@ def _build_animsources(scene):
     door_count = getattr(scene, "dgm_memory_doors_count", 0)
     for di in range(1, door_count + 1):
         vg = getattr(scene, "dgm_door_{}_vgroup".format(di), "").strip()
-        period = getattr(scene, "dgm_door_{}_anim_period".format(di), 0.15)
+        period = getattr(scene, "dgm_door_{}_anim_period".format(di), 1.0)
         if vg:
             lines.append(
                 "\t\tclass " + vg + "\n"
@@ -699,13 +715,19 @@ def _build_animphases(scene):
 def _build_damage_zones(scene):
     """Return per-door DamageZones entries, or empty string if no doors configured."""
     lines = []
-    door_count = getattr(scene, "dgm_memory_doors_count", 0)
+    use_building_doors = getattr(scene, "dgm_config_template", "") == 'object_with_doors'
+    door_count = getattr(scene, "dgm_memory_building_doors_count" if use_building_doors else "dgm_memory_doors_count", 0)
     for di in range(1, door_count + 1):
-        vg = getattr(scene, "dgm_door_{}_vgroup".format(di), "").strip()
+        if use_building_doors:
+            vg = getattr(scene, "dgm_building_door_{}_vgroup".format(di), "").strip() or "door{}".format(di)
+            class_name = "Door{}".format(di)
+        else:
+            vg = getattr(scene, "dgm_door_{}_vgroup".format(di), "").strip()
+            class_name = vg
         if not vg:
             continue
         lines.append(
-            "\t\t\t\tclass {vg}\n"
+            "\t\t\t\tclass {class_name}\n"
             "\t\t\t\t{{\n"
             "\t\t\t\t\tclass Health\n"
             "\t\t\t\t\t{{\n"
@@ -729,7 +751,7 @@ def _build_damage_zones(scene):
             "\t\t\t\t\t\t\tclass Shock {{ damage=0; }};\n"
             "\t\t\t\t\t\t}};\n"
             "\t\t\t\t\t}};\n"
-            "\t\t\t\t}};".format(vg=vg)
+            "\t\t\t\t}};".format(vg=vg, class_name=class_name)
         )
     if not lines:
         return ""
@@ -739,17 +761,28 @@ def _build_damage_zones(scene):
 def _build_doors_block(scene):
     """Return a class Doors {} block from door panel settings, or empty string."""
     lines = []
-    door_count = getattr(scene, "dgm_memory_doors_count", 0)
+    use_building_doors = getattr(scene, "dgm_config_template", "") == 'object_with_doors'
+    door_count = getattr(scene, "dgm_memory_building_doors_count" if use_building_doors else "dgm_memory_doors_count", 0)
     for di in range(1, door_count + 1):
-        vg = getattr(scene, "dgm_door_{}_vgroup".format(di), "").strip()
-        period = getattr(scene, "dgm_door_{}_anim_period".format(di), 0.15)
+        if use_building_doors:
+            vg = getattr(scene, "dgm_building_door_{}_vgroup".format(di), "").strip() or "door{}".format(di)
+            period = getattr(scene, "dgm_building_door_{}_anim_period".format(di), 1.0)
+            class_name = "Door{}".format(di)
+            display_name = "door {}".format(di)
+            component_name = class_name
+        else:
+            vg = getattr(scene, "dgm_door_{}_vgroup".format(di), "").strip()
+            period = getattr(scene, "dgm_door_{}_anim_period".format(di), 1.0)
+            class_name = vg
+            display_name = vg
+            component_name = vg
         if not vg:
             continue
         lines.append(
-            "\t\tclass {vg}\n"
+            "\t\tclass {class_name}\n"
             "\t\t{{\n"
-            "\t\t\tdisplayName=\"{vg}\";\n"
-            "\t\t\tcomponent=\"{vg}\";\n"
+            "\t\t\tdisplayName=\"{display_name}\";\n"
+            "\t\t\tcomponent=\"{component_name}\";\n"
             "\t\t\tsoundPos=\"{vg}_action\";\n"
             "\t\t\tanimPeriod={period:.2f};\n"
             "\t\t\tinitPhase=0.0;\n"
@@ -758,7 +791,8 @@ def _build_doors_block(scene):
             "\t\t\tsoundClose=\"doorWoodenSmallClose\";\n"
             "\t\t\tsoundLocked=\"doorWoodenSmallRattle\";\n"
             "\t\t\tsoundOpenABit=\"doorWoodenSmallOpenABit\";\n"
-            "\t\t}};".format(vg=vg, period=period)
+            "\t\t}};".format(vg=vg, period=period, class_name=class_name,
+                              display_name=display_name, component_name=component_name)
         )
     if not lines:
         return ""
@@ -812,19 +846,20 @@ def _build_cfgmods(class_name, scripts_root):
     ).format(cn=class_name, sp=scripts_rel)
 
 
-def _export_mod_files(p3d_path, class_name, scene, scripts_root, config_template):
+def _export_mod_files(p3d_path, class_name, scene, scripts_root, config_template,
+                      write_config_cpp=True, write_scripts=True):
     """Write config.cpp and scripts next to the p3d.
 
     config_template: 'container_base', 'house_no_destruct', or 'none'.
     """
-    if config_template == 'none':
+    if config_template == 'none' or (not write_config_cpp and not write_scripts):
         return
 
     addon_dir = os.path.dirname(__file__)
     template_base = os.path.join(addon_dir, "templates", config_template)
     model_dir = os.path.dirname(p3d_path)
 
-    use_scripts = (config_template == 'container_base' and scripts_root)
+    use_scripts = (write_scripts and config_template == 'container_base' and scripts_root)
     cfgmods = _build_cfgmods(class_name, scripts_root) if use_scripts else ""
 
     # Model path: absolute path stripped of drive, backslashes, no leading slash
@@ -851,14 +886,17 @@ def _export_mod_files(p3d_path, class_name, scene, scripts_root, config_template
             f.write(content)
 
     # config.cpp next to the p3d
-    _write_template(
-        os.path.join(template_base, "model", "config.cpp"),
-        os.path.join(model_dir, "config.cpp"),
-    )
+    if write_config_cpp:
+        _write_template(
+            os.path.join(template_base, "model", "config.cpp"),
+            os.path.join(model_dir, "config.cpp"),
+        )
 
     # 4_World scripts — container_base only
     if use_scripts:
         scripts_template = os.path.join(template_base, "4_World")
+        if not os.path.isdir(scripts_template):
+            return
         scripts_out = os.path.join(scripts_root, "4_World")
         for dirpath, dirnames, filenames in os.walk(scripts_template):
             for filename in filenames:
@@ -879,7 +917,7 @@ def _export_mod_files(p3d_path, class_name, scene, scripts_root, config_template
 class DGM_OT_pick_p3d_path(bpy.types.Operator):
     bl_idname = "dgm.pick_p3d_path"
     bl_label = "Set P3D Save Path"
-    bl_description = "Choose where to save the P3D file"
+    bl_description = "Choose the target folder/path for P3D or mod export"
 
     filepath: bpy.props.StringProperty(subtype='FILE_PATH')
     filter_glob: bpy.props.StringProperty(default="*.p3d", options={'HIDDEN'})
@@ -897,7 +935,16 @@ class DGM_OT_pick_p3d_path(bpy.types.Operator):
         return {'RUNNING_MODAL'}
 
     def execute(self, context):
-        context.scene.dgm_p3d_path = self.filepath
+        scene = context.scene
+        scene.dgm_p3d_path = self.filepath
+        p3d_path = bpy.path.abspath(self.filepath)
+        if not p3d_path.lower().endswith(".p3d"):
+            p3d_path += ".p3d"
+        model_dir = os.path.dirname(p3d_path)
+        if not getattr(scene, "dgm_override_textures_path", False):
+            scene.dgm_textures_path = os.path.join(model_dir, "data")
+        if not getattr(scene, "dgm_override_scripts_path", False):
+            scene.dgm_scripts_path = os.path.join(model_dir, "scripts")
         return {'FINISHED'}
 
 
@@ -908,7 +955,7 @@ class DGM_OT_pick_p3d_path(bpy.types.Operator):
 class DGM_OT_export_p3d(bpy.types.Operator):
     bl_idname = "dgm.export_p3d"
     bl_label = "Export DayZ Mod"
-    bl_description = "Export P3D, model.cfg, config.cpp and scripts"
+    bl_description = "Export selected outputs according to the Export panel settings"
 
     def execute(self, context):
         scene = context.scene
@@ -928,12 +975,32 @@ class DGM_OT_export_p3d(bpy.types.Operator):
 
         # Textures directory
         tex_path_raw = getattr(scene, "dgm_textures_path", "").strip()
-        textures_dir = bpy.path.abspath(tex_path_raw) if tex_path_raw else ""
+        if not getattr(scene, "dgm_override_textures_path", False):
+            tex_path_raw = os.path.join(model_dir, "data")
+        textures_dir = bpy.path.abspath(tex_path_raw) if tex_path_raw else os.path.join(model_dir, "data")
 
         # Scripts directory
         scripts_path_raw = getattr(scene, "dgm_scripts_path", "").strip()
-        scripts_dir = bpy.path.abspath(scripts_path_raw) if scripts_path_raw else ""
+        if not getattr(scene, "dgm_override_scripts_path", False):
+            scripts_path_raw = os.path.join(model_dir, "scripts")
+        scripts_dir = bpy.path.abspath(scripts_path_raw) if scripts_path_raw else os.path.join(model_dir, "scripts")
         config_template = getattr(scene, "dgm_config_template", "container_base")
+        export_config_cpp = getattr(scene, "dgm_export_config_cpp", True)
+        export_scripts = getattr(scene, "dgm_export_scripts", True)
+
+        if export_scripts and config_template == 'container_base':
+            has_lid_doors = (
+                geometry.memory_point_exists('lid_1_axis_1') or
+                geometry.memory_point_exists('lid_1_axis_2')
+            )
+            if has_lid_doors:
+                if not scripts_dir:
+                    self.report({'ERROR'}, "Set Scripts path or disable Export scripts")
+                    return {'CANCELLED'}
+                scripts_norm = os.path.normpath(scripts_dir)
+                if os.path.basename(scripts_norm).lower() != "scripts":
+                    self.report({'ERROR'}, "Scripts path must end with a folder named 'scripts'")
+                    return {'CANCELLED'}
 
         # Ensure there is an active object
         target = getattr(scene, "dgm_target_object", None)
@@ -988,7 +1055,11 @@ class DGM_OT_export_p3d(bpy.types.Operator):
 
         # Write config files and scripts
         try:
-            _export_mod_files(p3d_path, class_name, scene, scripts_dir, config_template)
+            _export_mod_files(
+                p3d_path, class_name, scene, scripts_dir, config_template,
+                write_config_cpp=export_config_cpp,
+                write_scripts=export_scripts,
+            )
         except Exception as e:
             self.report({'WARNING'}, "Config/script export failed: " + str(e))
 

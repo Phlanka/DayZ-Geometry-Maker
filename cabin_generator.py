@@ -278,6 +278,72 @@ def _add_box(bm, min_xyz, max_xyz):
     ]
     for f in ((0,1,2,3),(4,7,6,5),(0,4,5,1),(1,5,6,2),(2,6,7,3),(3,7,4,0)):
         bm.faces.new([v[i] for i in f])
+    return v
+
+
+def _stair_opening(params, width, length, wall_t):
+    stair_w = max(0.5, float(params.get('stair_width', 0.9)))
+    stair_l = max(0.8, float(params.get('stair_length', 2.2)))
+    off_x = float(params.get('stair_offset_x', 0.0))
+    off_y = float(params.get('stair_offset_y', 0.0))
+    hx = width * 0.5 - wall_t - 0.05
+    hy = length * 0.5 - wall_t - 0.05
+    stair_w = min(stair_w, max(0.5, hx * 2.0))
+    stair_l = min(stair_l, max(0.8, hy * 2.0))
+    cx = _clamp(off_x, -hx + stair_w * 0.5, hx - stair_w * 0.5)
+    cy = _clamp(off_y, -hy + stair_l * 0.5, hy - stair_l * 0.5)
+    return (cx - stair_w * 0.5, cx + stair_w * 0.5,
+            cy - stair_l * 0.5, cy + stair_l * 0.5)
+
+
+def _add_floor_with_opening(add_box_fn, x0, x1, y0, y1, z0, z1, opening=None):
+    if opening is None:
+        add_box_fn((x0, y0, z0), (x1, y1, z1))
+        return
+    ox0, ox1, oy0, oy1 = opening
+    ox0 = _clamp(ox0, x0, x1)
+    ox1 = _clamp(ox1, x0, x1)
+    oy0 = _clamp(oy0, y0, y1)
+    oy1 = _clamp(oy1, y0, y1)
+    if ox1 <= ox0 or oy1 <= oy0:
+        add_box_fn((x0, y0, z0), (x1, y1, z1))
+        return
+    add_box_fn((x0, y0, z0), (ox0, y1, z1))
+    add_box_fn((ox1, y0, z0), (x1, y1, z1))
+    add_box_fn((ox0, y0, z0), (ox1, oy0, z1))
+    add_box_fn((ox0, oy1, z0), (ox1, y1, z1))
+
+
+def _add_stairs(bm, params, width, length, wall_t, floor_h, floor_count):
+    if not params.get('stairs_enabled', False) or floor_count < 2:
+        return
+    ox0, ox1, oy0, oy1 = _stair_opening(params, width, length, wall_t)
+    steps = max(3, min(32, int(params.get('stair_steps_per_floor', 10))))
+    thick = max(0.03, float(params.get('stair_tread_thickness', 0.08)))
+    direction = params.get('stair_direction', 'Y_POS')
+    for fi in range(floor_count - 1):
+        base_z = floor_h * fi
+        for step in range(steps):
+            t0 = step / steps
+            t1 = (step + 1) / steps
+            top_z = base_z + floor_h * t1
+            bot_z = max(base_z, top_z - thick)
+            if direction == 'Y_NEG':
+                y0 = oy1 - (oy1 - oy0) * t1
+                y1 = oy1 - (oy1 - oy0) * t0
+                _add_box(bm, (ox0, y0, bot_z), (ox1, y1, top_z))
+            elif direction == 'X_POS':
+                x0 = ox0 + (ox1 - ox0) * t0
+                x1 = ox0 + (ox1 - ox0) * t1
+                _add_box(bm, (x0, oy0, bot_z), (x1, oy1, top_z))
+            elif direction == 'X_NEG':
+                x0 = ox1 - (ox1 - ox0) * t1
+                x1 = ox1 - (ox1 - ox0) * t0
+                _add_box(bm, (x0, oy0, bot_z), (x1, oy1, top_z))
+            else:
+                y0 = oy0 + (oy1 - oy0) * t0
+                y1 = oy0 + (oy1 - oy0) * t1
+                _add_box(bm, (ox0, y0, bot_z), (ox1, y1, top_z))
 
 
 def _add_gable_roof(bm, width, length, wall_h, roof_h, overhang):
@@ -336,13 +402,13 @@ def _add_face_box(bm, side, axis0, axis1, z0, z1, width, length, depth):
     hy = length * 0.5
     d = max(0.004, depth)
     if side == 'front':
-        _add_box(bm, (axis0, -hy - d, z0), (axis1, -hy - 0.002, z1))
+        return _add_box(bm, (axis0, -hy - d, z0), (axis1, -hy - 0.002, z1))
     elif side == 'back':
-        _add_box(bm, (axis0, hy + 0.002, z0), (axis1, hy + d, z1))
+        return _add_box(bm, (axis0, hy + 0.002, z0), (axis1, hy + d, z1))
     elif side == 'left':
-        _add_box(bm, (-hx - d, axis0, z0), (-hx - 0.002, axis1, z1))
+        return _add_box(bm, (-hx - d, axis0, z0), (-hx - 0.002, axis1, z1))
     else:
-        _add_box(bm, (hx + 0.002, axis0, z0), (hx + d, axis1, z1))
+        return _add_box(bm, (hx + 0.002, axis0, z0), (hx + d, axis1, z1))
 
 
 def _add_door_panel_from_spec(bm, spec, width, length, floor_h):
@@ -351,7 +417,15 @@ def _add_door_panel_from_spec(bm, spec, width, length, floor_h):
     z1 = base_z + spec['height']
     side = spec['side']
     depth = spec['thickness']
-    _add_face_box(bm, side, spec['axis0'], spec['axis1'], z0, z1, width, length, depth)
+    door_verts = []
+
+    def add_part(axis0, axis1, part_z0, part_z1, part_depth):
+        verts = _add_face_box(bm, side, axis0, axis1, part_z0, part_z1,
+                              width, length, part_depth)
+        if verts:
+            door_verts.extend(verts)
+
+    add_part(spec['axis0'], spec['axis1'], z0, z1, depth)
 
     if spec.get('glass', False):
         glass_w = (spec['axis1'] - spec['axis0']) * 0.42
@@ -359,15 +433,17 @@ def _add_door_panel_from_spec(bm, spec, width, length, floor_h):
         ga0 = (spec['axis0'] + spec['axis1']) * 0.5 - glass_w * 0.5
         ga1 = ga0 + glass_w
         gz0 = base_z + spec['height'] * 0.55
-        _add_face_box(bm, side, ga0, ga1, gz0, gz0 + glass_h, width, length, depth + 0.010)
+        add_part(ga0, ga1, gz0, gz0 + glass_h, depth + 0.010)
 
     if spec.get('handle', True):
         handle_z = base_z + min(spec['height'] * 0.55, 1.15)
         handle_a = spec['axis1'] - (spec['axis1'] - spec['axis0']) * 0.18
         size = 0.055
-        _add_face_box(bm, side, handle_a - size * 0.5, handle_a + size * 0.5,
-                      handle_z - size * 0.5, handle_z + size * 0.5,
-                      width, length, depth + 0.025)
+        add_part(handle_a - size * 0.5, handle_a + size * 0.5,
+                 handle_z - size * 0.5, handle_z + size * 0.5,
+                 depth + 0.025)
+
+    return door_verts
 
 
 def _add_window_detail(bm, side, axis0, axis1, z0, z1, width, length, frame_w, frame_d, sill_d):
@@ -467,6 +543,8 @@ def build_cabin(params):
     window_frame_w = max(0.015, float(params.get('window_frame_width', 0.06)))
     window_frame_d = max(0.004, float(params.get('window_frame_depth', 0.035)))
     window_sill_d = max(0.0, float(params.get('window_sill_depth', 0.08)))
+    stairs_enabled = bool(params.get('stairs_enabled', False)) and floor_count > 1
+    stair_opening = _stair_opening(params, width, length, wall_t) if stairs_enabled else None
 
     hx = width * 0.5
     hy = length * 0.5
@@ -475,7 +553,10 @@ def build_cabin(params):
     _add_box(bm, (-hx, -hy, -floor_t), (hx, hy, 0.0))
     for fi in range(1, floor_count):
         z = floor_h * fi
-        _add_box(bm, (-hx, -hy, z - floor_t * 0.5), (hx, hy, z + floor_t * 0.5))
+        _add_floor_with_opening(lambda mn, mx: _add_box(bm, mn, mx),
+                                -hx, hx, -hy, hy,
+                                z - floor_t * 0.5, z + floor_t * 0.5,
+                                stair_opening)
 
     # Walls with configurable window and door openings on every side/floor.
     door_specs = _door_specs(params, width, length, wall_t, floor_h, floor_count)
@@ -530,17 +611,76 @@ def build_cabin(params):
     _add_gable_roof(bm, width, length, wall_h, roof_h, over)
     if roof_cover:
         _add_roof_cover(bm, width, length, wall_h, roof_h, over, roof_cover_over, roof_cover_t)
+    _add_stairs(bm, params, width, length, wall_t, floor_h, floor_count)
     _add_balcony(bm, params, width, length, floor_h, floor_count)
 
     bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=1e-5)
 
+    door_groups = []
     for spec in door_specs:
         if spec.get('panel', True):
-            _add_door_panel_from_spec(bm, spec, width, length, floor_h)
+            verts = _add_door_panel_from_spec(bm, spec, width, length, floor_h)
+            if verts:
+                door_groups.append(("door{}".format(spec['idx']), verts))
     _add_chimney(bm, params, wall_h, roof_h)
 
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-    return bm, wall_h + roof_h
+    bm.verts.ensure_lookup_table()
+    bm.verts.index_update()
+    door_index_groups = [
+        (name, sorted({v.index for v in verts if v.is_valid}))
+        for name, verts in door_groups
+    ]
+    return bm, wall_h + roof_h, door_index_groups
+
+
+def _is_generated_door_group_name(name):
+    return name.startswith("door") and name[4:].isdigit()
+
+
+def _apply_cabin_door_vgroups(obj, door_groups):
+    for vg in list(obj.vertex_groups):
+        if _is_generated_door_group_name(vg.name):
+            obj.vertex_groups.remove(vg)
+    vertex_count = len(obj.data.vertices)
+    for name, indices in door_groups:
+        valid_indices = [idx for idx in indices if 0 <= idx < vertex_count]
+        if not valid_indices:
+            continue
+        vg = obj.vertex_groups.new(name=name)
+        vg.add(valid_indices, 1.0, 'REPLACE')
+
+
+def _write_cabin_mesh(obj, params):
+    bm, h, door_groups = build_cabin(params)
+    bm.to_mesh(obj.data)
+    bm.free()
+    obj.data.update()
+    _apply_cabin_door_vgroups(obj, door_groups)
+    obj['dgm_cabin_height'] = round(h, 4)
+    return h
+
+
+def _snapshot_vertex_groups(obj):
+    groups = []
+    for vg in obj.vertex_groups:
+        indices = []
+        for vert in obj.data.vertices:
+            if any(g.group == vg.index and g.weight > 0.0 for g in vert.groups):
+                indices.append(vert.index)
+        groups.append((vg.name, indices))
+    return groups
+
+
+def _restore_vertex_groups(obj, groups):
+    for vg in list(obj.vertex_groups):
+        obj.vertex_groups.remove(vg)
+    vertex_count = len(obj.data.vertices)
+    for name, indices in groups:
+        valid_indices = [idx for idx in indices if 0 <= idx < vertex_count]
+        vg = obj.vertex_groups.new(name=name)
+        if valid_indices:
+            vg.add(valid_indices, 1.0, 'REPLACE')
 
 
 def _count_scene_cabins():
@@ -561,6 +701,14 @@ def _params_from_obj(obj):
         roof_height=obj.get('dgm_p_roof_height', 0.9),
         roof_overhang=obj.get('dgm_p_roof_overhang', 0.25),
         floor_thickness=obj.get('dgm_p_floor_thickness', 0.12),
+        stairs_enabled=obj.get('dgm_p_stairs_enabled', False),
+        stair_width=obj.get('dgm_p_stair_width', 0.9),
+        stair_length=obj.get('dgm_p_stair_length', 2.2),
+        stair_offset_x=obj.get('dgm_p_stair_offset_x', 0.0),
+        stair_offset_y=obj.get('dgm_p_stair_offset_y', 0.0),
+        stair_direction=obj.get('dgm_p_stair_direction', 'Y_POS'),
+        stair_steps_per_floor=obj.get('dgm_p_stair_steps_per_floor', 10),
+        stair_tread_thickness=obj.get('dgm_p_stair_tread_thickness', 0.08),
         door_count=obj.get('dgm_p_door_count', 1),
         door_side=obj.get('dgm_p_door_side', 'front'),
         door_floor=obj.get('dgm_p_door_floor', 1),
@@ -662,38 +810,48 @@ def _cabin_collision_specs(params):
     roof_h = max(0.15, float(params.get('roof_height', 0.9)))
     over = max(0.0, float(params.get('roof_overhang', 0.25)))
     floor_t = max(0.02, float(params.get('floor_thickness', 0.12)))
+    stairs_enabled = bool(params.get('stairs_enabled', False)) and floor_count > 1
+    stair_opening = _stair_opening(params, width, length, wall_t) if stairs_enabled else None
     hx = width * 0.5
     hy = length * 0.5
     specs = []
 
-    def add_box(min_xyz, max_xyz):
+    def add_box(min_xyz, max_xyz, selection_name=None):
         x0, y0, z0 = min_xyz
         x1, y1, z1 = max_xyz
         if x1 <= x0 or y1 <= y0 or z1 <= z0:
             return
-        specs.append(_local_box_verts(min_xyz, max_xyz))
+        verts, faces = _local_box_verts(min_xyz, max_xyz)
+        specs.append((verts, faces, selection_name))
 
     add_box((-hx, -hy, -floor_t), (hx, hy, 0.0))
     for fi in range(1, floor_count):
         z = floor_h * fi
-        add_box((-hx, -hy, z - floor_t * 0.5), (hx, hy, z + floor_t * 0.5))
+        _add_floor_with_opening(add_box, -hx, hx, -hy, hy,
+                                z - floor_t * 0.5, z + floor_t * 0.5,
+                                stair_opening)
 
     door_specs = _door_specs(params, width, length, wall_t, floor_h, floor_count)
     for d in door_specs:
         if d.get('panel', True):
             base_z = floor_h * (d['floor'] - 1)
+            selection_name = "door{}".format(d['idx'])
             if d['side'] == 'front':
                 add_box((d['axis0'], -hy - d['thickness'], base_z + 0.02),
-                        (d['axis1'], -hy, base_z + d['height']))
+                        (d['axis1'], -hy, base_z + d['height']),
+                        selection_name)
             elif d['side'] == 'back':
                 add_box((d['axis0'], hy, base_z + 0.02),
-                        (d['axis1'], hy + d['thickness'], base_z + d['height']))
+                        (d['axis1'], hy + d['thickness'], base_z + d['height']),
+                        selection_name)
             elif d['side'] == 'left':
                 add_box((-hx - d['thickness'], d['axis0'], base_z + 0.02),
-                        (-hx, d['axis1'], base_z + d['height']))
+                        (-hx, d['axis1'], base_z + d['height']),
+                        selection_name)
             else:
                 add_box((hx, d['axis0'], base_z + 0.02),
-                        (hx + d['thickness'], d['axis1'], base_z + d['height']))
+                        (hx + d['thickness'], d['axis1'], base_z + d['height']),
+                        selection_name)
 
     y_start = -hy + wall_t
     y_end = hy - wall_t
@@ -717,7 +875,37 @@ def _cabin_collision_specs(params):
         right_holes.extend((d['axis0'], d['axis1'], 0.0, d['height'])
                            for d in door_specs if d['side'] == 'right' and d['floor'] == floor_idx)
         _add_wall_with_holes(add_box, 'X', hx - wall_t, hx, y_start, y_end, base_z, top_z, right_holes)
-    specs.append(_local_gable_roof_verts(width, length, wall_h, roof_h, over))
+    roof_verts, roof_faces = _local_gable_roof_verts(width, length, wall_h, roof_h, over)
+    specs.append((roof_verts, roof_faces, None))
+
+    if stairs_enabled:
+        ox0, ox1, oy0, oy1 = stair_opening
+        steps = max(3, min(32, int(params.get('stair_steps_per_floor', 10))))
+        thick = max(0.03, float(params.get('stair_tread_thickness', 0.08)))
+        direction = params.get('stair_direction', 'Y_POS')
+        for fi in range(floor_count - 1):
+            base_z = floor_h * fi
+            for step in range(steps):
+                t0 = step / steps
+                t1 = (step + 1) / steps
+                top_z = base_z + floor_h * t1
+                bot_z = max(base_z, top_z - thick)
+                if direction == 'Y_NEG':
+                    y0 = oy1 - (oy1 - oy0) * t1
+                    y1 = oy1 - (oy1 - oy0) * t0
+                    add_box((ox0, y0, bot_z), (ox1, y1, top_z))
+                elif direction == 'X_POS':
+                    x0 = ox0 + (ox1 - ox0) * t0
+                    x1 = ox0 + (ox1 - ox0) * t1
+                    add_box((x0, oy0, bot_z), (x1, oy1, top_z))
+                elif direction == 'X_NEG':
+                    x0 = ox1 - (ox1 - ox0) * t1
+                    x1 = ox1 - (ox1 - ox0) * t0
+                    add_box((x0, oy0, bot_z), (x1, oy1, top_z))
+                else:
+                    y0 = oy0 + (oy1 - oy0) * t0
+                    y1 = oy0 + (oy1 - oy0) * t1
+                    add_box((ox0, y0, bot_z), (ox1, y1, top_z))
 
     for b in (_balcony_specs(params, width, length, floor_h, floor_count)
               if params.get('balcony_enabled', False) else []):
@@ -821,7 +1009,9 @@ def create_cabin_collision(cabin_obj, mass=250.0):
 
     mw = cabin_obj.matrix_world
     vert_ranges = []
-    for comp_name, (verts, faces) in zip(comp_names, specs):
+    named_ranges = []
+    for comp_name, spec in zip(comp_names, specs):
+        verts, faces, selection_name = spec
         base_idx = len(bm.verts)
         new_verts = [bm.verts.new(mw @ mathutils.Vector(v)) for v in verts]
         for face in faces:
@@ -830,6 +1020,8 @@ def create_cabin_collision(cabin_obj, mass=250.0):
             except ValueError:
                 pass
         vert_ranges.append((comp_name, base_idx, base_idx + len(new_verts)))
+        if selection_name:
+            named_ranges.append((selection_name, base_idx, base_idx + len(new_verts)))
 
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
     bm.to_mesh(geo.data)
@@ -841,11 +1033,21 @@ def create_cabin_collision(cabin_obj, mass=250.0):
         indices = list(range(start, min(end, total_verts)))
         vg = geo.vertex_groups.new(name=comp_name)
         vg.add(indices, 1.0, 'REPLACE')
+    named_selection_names = []
+    for selection_name, start, end in named_ranges:
+        indices = list(range(start, min(end, total_verts)))
+        if not indices:
+            continue
+        vg = geo.vertex_groups.get(selection_name)
+        if vg is None:
+            vg = geo.vertex_groups.new(name=selection_name)
+        vg.add(indices, 1.0, 'ADD')
+        named_selection_names.append(selection_name)
 
     geometry.add_fhq_weights(geo, weight=mass / max(len(geo.data.vertices), 1))
     geometry.set_dgm_props(geo, geometry.LOD_VALUES["Geometry"], mass=mass)
 
-    col_map[cabin_obj.name] = comp_names
+    col_map[cabin_obj.name] = comp_names + named_selection_names
     geo['dgm_cabin_col_map'] = json.dumps(col_map)
     return geo, len(comp_names)
 
@@ -867,6 +1069,22 @@ class DGM_OT_add_cabin(bpy.types.Operator):
     roof_cover_overhang: bpy.props.FloatProperty(name="Cover Overhang", default=0.10, min=0.0, max=1.0, step=1, unit='LENGTH')
     roof_cover_thickness: bpy.props.FloatProperty(name="Cover Thickness", default=0.04, min=0.01, max=0.25, step=0.1, unit='LENGTH')
     floor_thickness: bpy.props.FloatProperty(name="Floor Thickness", default=0.12, min=0.02, max=1.0, step=0.1, unit='LENGTH')
+    stairs_enabled: bpy.props.BoolProperty(name="Stairs", default=False, description="Generate stairs and matching floor openings between floors")
+    stair_width: bpy.props.FloatProperty(name="Stair Width", default=0.9, min=0.5, max=4.0, step=1, unit='LENGTH')
+    stair_length: bpy.props.FloatProperty(name="Stair Opening Length", default=2.2, min=0.8, max=8.0, step=1, unit='LENGTH')
+    stair_offset_x: bpy.props.FloatProperty(name="Stair Offset X", default=0.0, min=-15.0, max=15.0, step=1, unit='LENGTH')
+    stair_offset_y: bpy.props.FloatProperty(name="Stair Offset Y", default=0.0, min=-15.0, max=15.0, step=1, unit='LENGTH')
+    stair_direction: bpy.props.EnumProperty(
+        name="Stair Direction",
+        items=[
+            ('Y_POS', "+Y", "Stairs climb toward positive Y"),
+            ('Y_NEG', "-Y", "Stairs climb toward negative Y"),
+            ('X_POS', "+X", "Stairs climb toward positive X"),
+            ('X_NEG', "-X", "Stairs climb toward negative X"),
+        ],
+        default='Y_POS')
+    stair_steps_per_floor: bpy.props.IntProperty(name="Steps per Floor", default=10, min=3, max=32)
+    stair_tread_thickness: bpy.props.FloatProperty(name="Step Thickness", default=0.08, min=0.03, max=0.35, step=0.1, unit='LENGTH')
     door_count: bpy.props.IntProperty(name="Door Openings", default=1, min=0, max=4)
     door_side: bpy.props.EnumProperty(name="Door Side", items=[('front', "Front", ""), ('back', "Back", ""), ('left', "Left", ""), ('right', "Right", "")], default='front')
     door_floor: bpy.props.IntProperty(name="Door Floor", default=1, min=1, max=3)
@@ -934,6 +1152,11 @@ class DGM_OT_add_cabin(bpy.types.Operator):
             roof_overhang=self.roof_overhang, roof_cover_enabled=self.roof_cover_enabled,
             roof_cover_overhang=self.roof_cover_overhang, roof_cover_thickness=self.roof_cover_thickness,
             floor_thickness=self.floor_thickness,
+            stairs_enabled=self.stairs_enabled, stair_width=self.stair_width,
+            stair_length=self.stair_length, stair_offset_x=self.stair_offset_x,
+            stair_offset_y=self.stair_offset_y, stair_direction=self.stair_direction,
+            stair_steps_per_floor=self.stair_steps_per_floor,
+            stair_tread_thickness=self.stair_tread_thickness,
             door_count=self.door_count, door_side=self.door_side, door_floor=self.door_floor,
             door_width=self.door_width, door_height=self.door_height,
             door_offset_x=self.door_offset_x, door_panel=self.door_panel, door_thickness=self.door_thickness,
@@ -997,11 +1220,7 @@ class DGM_OT_add_cabin(bpy.types.Operator):
         obj = context.active_object
         if not _is_active_cabin(obj):
             return
-        bm, h = build_cabin(self._get_params())
-        bm.to_mesh(obj.data)
-        bm.free()
-        obj.data.update()
-        obj['dgm_cabin_height'] = round(h, 4)
+        _write_cabin_mesh(obj, self._get_params())
 
     def _commit(self, context):
         obj = context.active_object
@@ -1059,6 +1278,22 @@ class DGM_OT_edit_cabin(bpy.types.Operator):
     roof_cover_overhang: bpy.props.FloatProperty(name="Cover Overhang", default=0.10, min=0.0, max=1.0, step=1, unit='LENGTH')
     roof_cover_thickness: bpy.props.FloatProperty(name="Cover Thickness", default=0.04, min=0.01, max=0.25, step=0.1, unit='LENGTH')
     floor_thickness: bpy.props.FloatProperty(name="Floor Thickness", default=0.12, min=0.02, max=1.0, step=0.1, unit='LENGTH')
+    stairs_enabled: bpy.props.BoolProperty(name="Stairs", default=False, description="Generate stairs and matching floor openings between floors")
+    stair_width: bpy.props.FloatProperty(name="Stair Width", default=0.9, min=0.5, max=4.0, step=1, unit='LENGTH')
+    stair_length: bpy.props.FloatProperty(name="Stair Opening Length", default=2.2, min=0.8, max=8.0, step=1, unit='LENGTH')
+    stair_offset_x: bpy.props.FloatProperty(name="Stair Offset X", default=0.0, min=-15.0, max=15.0, step=1, unit='LENGTH')
+    stair_offset_y: bpy.props.FloatProperty(name="Stair Offset Y", default=0.0, min=-15.0, max=15.0, step=1, unit='LENGTH')
+    stair_direction: bpy.props.EnumProperty(
+        name="Stair Direction",
+        items=[
+            ('Y_POS', "+Y", "Stairs climb toward positive Y"),
+            ('Y_NEG', "-Y", "Stairs climb toward negative Y"),
+            ('X_POS', "+X", "Stairs climb toward positive X"),
+            ('X_NEG', "-X", "Stairs climb toward negative X"),
+        ],
+        default='Y_POS')
+    stair_steps_per_floor: bpy.props.IntProperty(name="Steps per Floor", default=10, min=3, max=32)
+    stair_tread_thickness: bpy.props.FloatProperty(name="Step Thickness", default=0.08, min=0.03, max=0.35, step=0.1, unit='LENGTH')
     door_count: bpy.props.IntProperty(name="Door Openings", default=1, min=0, max=4)
     door_side: bpy.props.EnumProperty(name="Door Side", items=[('front', "Front", ""), ('back', "Back", ""), ('left', "Left", ""), ('right', "Right", "")], default='front')
     door_floor: bpy.props.IntProperty(name="Door Floor", default=1, min=1, max=3)
@@ -1118,6 +1353,7 @@ class DGM_OT_edit_cabin(bpy.types.Operator):
     chimney_cap_height: bpy.props.FloatProperty(name="Cap Height", default=0.08, min=0.03, max=0.50, step=1, unit='LENGTH')
 
     _snapshot_mesh = None
+    _snapshot_vertex_groups = None
 
     @classmethod
     def poll(cls, context):
@@ -1130,6 +1366,11 @@ class DGM_OT_edit_cabin(bpy.types.Operator):
             roof_overhang=self.roof_overhang, roof_cover_enabled=self.roof_cover_enabled,
             roof_cover_overhang=self.roof_cover_overhang, roof_cover_thickness=self.roof_cover_thickness,
             floor_thickness=self.floor_thickness,
+            stairs_enabled=self.stairs_enabled, stair_width=self.stair_width,
+            stair_length=self.stair_length, stair_offset_x=self.stair_offset_x,
+            stair_offset_y=self.stair_offset_y, stair_direction=self.stair_direction,
+            stair_steps_per_floor=self.stair_steps_per_floor,
+            stair_tread_thickness=self.stair_tread_thickness,
             door_count=self.door_count, door_side=self.door_side, door_floor=self.door_floor,
             door_width=self.door_width, door_height=self.door_height,
             door_offset_x=self.door_offset_x, door_panel=self.door_panel, door_thickness=self.door_thickness,
@@ -1174,11 +1415,7 @@ class DGM_OT_edit_cabin(bpy.types.Operator):
         obj = context.active_object
         if not _is_active_cabin(obj):
             return
-        bm, h = build_cabin(self._get_params())
-        bm.to_mesh(obj.data)
-        bm.free()
-        obj.data.update()
-        obj['dgm_cabin_height'] = round(h, 4)
+        _write_cabin_mesh(obj, self._get_params())
 
     def invoke(self, context, event):
         obj = context.active_object
@@ -1188,6 +1425,7 @@ class DGM_OT_edit_cabin(bpy.types.Operator):
         snap = bmesh.new()
         snap.from_mesh(obj.data)
         self._snapshot_mesh = snap
+        self._snapshot_vertex_groups = _snapshot_vertex_groups(obj)
         return context.window_manager.invoke_props_dialog(self, width=420)
 
     def cancel(self, context):
@@ -1195,8 +1433,10 @@ class DGM_OT_edit_cabin(bpy.types.Operator):
         if obj is not None and self._snapshot_mesh is not None:
             self._snapshot_mesh.to_mesh(obj.data)
             obj.data.update()
+            _restore_vertex_groups(obj, self._snapshot_vertex_groups or [])
             self._snapshot_mesh.free()
             self._snapshot_mesh = None
+            self._snapshot_vertex_groups = None
 
     def check(self, context):
         self._rebuild(context)
@@ -1232,13 +1472,9 @@ class DGM_OT_restore_cabin(bpy.types.Operator):
         saved_loc = obj.location.copy()
         saved_rot = obj.rotation_euler.copy()
         obj.scale = (1.0, 1.0, 1.0)
-        bm, h = build_cabin(p)
-        bm.to_mesh(obj.data)
-        bm.free()
-        obj.data.update()
+        h = _write_cabin_mesh(obj, p)
         obj.location = saved_loc
         obj.rotation_euler = saved_rot
-        obj['dgm_cabin_height'] = round(h, 4)
         self.report({'INFO'}, "Cabin restored")
         return {'FINISHED'}
 
@@ -1291,6 +1527,25 @@ def _draw_props(layout, op):
         col.prop(op, 'roof_cover_overhang')
         col.prop(op, 'roof_cover_thickness')
     col.prop(op, 'floor_thickness')
+
+    box = layout.box()
+    box.label(text="Stairs", icon='MOD_BUILD')
+    col = box.column(align=True)
+    stair_row = col.row(align=True)
+    stair_row.enabled = int(op.floor_count) > 1
+    stair_row.prop(op, 'stairs_enabled')
+    if int(op.floor_count) <= 1:
+        note = col.row()
+        note.enabled = False
+        note.label(text="Available when Floors is 2 or more", icon='INFO')
+    elif op.stairs_enabled:
+        col.prop(op, 'stair_direction', expand=True)
+        col.prop(op, 'stair_width')
+        col.prop(op, 'stair_length')
+        col.prop(op, 'stair_offset_x')
+        col.prop(op, 'stair_offset_y')
+        col.prop(op, 'stair_steps_per_floor')
+        col.prop(op, 'stair_tread_thickness')
 
     box = layout.box()
     box.label(text="Openings", icon='MOD_BUILD')

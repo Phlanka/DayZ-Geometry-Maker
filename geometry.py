@@ -93,6 +93,34 @@ def get_bbox(obj):
     return min_x, max_x, min_y, max_y, min_z, max_z
 
 
+def get_vertex_group_bbox(obj, group_name):
+    """Return world-space bbox for vertices assigned to a vertex group."""
+    if not obj or obj.type != 'MESH':
+        return None
+    vg = obj.vertex_groups.get(group_name)
+    if not vg:
+        return None
+
+    wm = obj.matrix_world
+    coords = []
+    for v in obj.data.vertices:
+        for g in v.groups:
+            if g.group == vg.index and g.weight > 0.0:
+                coords.append(wm @ v.co)
+                break
+
+    if not coords:
+        return None
+
+    min_x = min(v.x for v in coords)
+    max_x = max(v.x for v in coords)
+    min_y = min(v.y for v in coords)
+    max_y = max(v.y for v in coords)
+    min_z = min(v.z for v in coords)
+    max_z = max(v.z for v in coords)
+    return min_x, max_x, min_y, max_y, min_z, max_z
+
+
 def ensure_object_mode():
     if bpy.context.active_object and bpy.context.active_object.mode != 'OBJECT':
         bpy.ops.object.mode_set(mode='OBJECT')
@@ -924,7 +952,7 @@ def create_ladder_collision(ladder_obj, mass_per_stringer=20.0):
 def add_memory_ladder(ladder_idx=1):
     """
     Import ladder Memory and View Geometry LODs from bundled P3D assets.
-    ladder_idx (1-3) controls which prefix is used: ladder1, ladder2, ladder3.
+    ladder_idx (1-5) controls which prefix is used: ladder1, ladder2, ...
     Named selections from the P3D (always 'ladder1' prefix) are renamed to match
     the requested index.
     """
@@ -1193,6 +1221,81 @@ def remove_view_geometry_ladder(ladder_idx=1):
     _cleanup_empty_collection("View Geometry")
 
 
+def _building_door_vg_obj_name(door_idx):
+    return "View Geometry.door{}".format(door_idx)
+
+
+def _bbox_tuple_to_data(bbox):
+    if not bbox:
+        return None
+    min_x, max_x, min_y, max_y, min_z, max_z = bbox
+    cx = (max_x + min_x) / 2
+    cy = (max_y + min_y) / 2
+    cz = (max_z + min_z) / 2
+    return {
+        'min_x': min_x, 'max_x': max_x,
+        'min_y': min_y, 'max_y': max_y,
+        'min_z': min_z, 'max_z': max_z,
+        'cx': cx, 'cy': cy, 'cz': cz,
+    }
+
+
+def _building_door_bbox_data(door_idx):
+    original_obj = bpy.context.scene.dgm_target_object
+    if not original_obj or original_obj.type != 'MESH':
+        return None
+    b = _bbox_tuple_to_data(get_vertex_group_bbox(original_obj, "door{}".format(door_idx)))
+    target_b = _bbox_data()
+    if b and target_b:
+        b['target_cx'] = target_b['cx']
+        b['target_cy'] = target_b['cy']
+    return b
+
+
+def create_view_geometry_building_door(door_idx=1, bbox_data=None):
+    """Create a bbox-shaped View Geometry object for one building door slot."""
+    original_obj = bpy.context.scene.dgm_target_object
+    if not original_obj or original_obj.type != 'MESH':
+        return None
+
+    obj_name = _building_door_vg_obj_name(door_idx)
+    existing = bpy.data.objects.get(obj_name)
+    if existing:
+        bpy.data.objects.remove(existing, do_unlink=True)
+
+    b = bbox_data or _building_door_bbox_data(door_idx)
+    if not b:
+        return None
+
+    bpy.ops.mesh.primitive_cube_add(size=1, location=(b['cx'], b['cy'], b['cz']))
+    obj = bpy.context.object
+    obj.name = obj_name
+    obj.scale = (
+        max(b['max_x'] - b['min_x'], 0.01),
+        max(b['max_y'] - b['min_y'], 0.01),
+        max(b['max_z'] - b['min_z'], 0.01),
+    )
+    bpy.ops.object.transform_apply(scale=True)
+
+    all_indices = [v.index for v in obj.data.vertices]
+    door_vg = obj.vertex_groups.new(name="door{}".format(door_idx))
+    door_vg.add(all_indices, 1.0, 'REPLACE')
+    comp_vg = obj.vertex_groups.new(name="Component{:02d}".format(door_idx))
+    comp_vg.add(all_indices, 1.0, 'REPLACE')
+
+    set_dgm_props(obj, LOD_VALUES["View Geometry"])
+    assign_default_material(obj)
+    move_to_collection(obj, "View Geometry")
+    return obj
+
+
+def remove_view_geometry_building_door(door_idx=1):
+    obj = bpy.data.objects.get(_building_door_vg_obj_name(door_idx))
+    if obj:
+        bpy.data.objects.remove(obj, do_unlink=True)
+    _cleanup_empty_collection("View Geometry")
+
+
 def add_memory_lights(count=1):
     import math
     b = _bbox_data()
@@ -1229,15 +1332,125 @@ def add_memory_doors(count=1):
     if not b:
         return
     mem = _get_or_create_memory_object()
-    names = ['door_{}_axis_{}'.format(i, p) for i in range(1, count + 1) for p in (1, 2)]
+    names = ['lid_{}_axis_{}'.format(i, p) for i in range(1, count + 1) for p in (1, 2)]
     _remove_memory_groups(mem, names)
     points = []
+    p1, p2 = _lid_axis_points_from_bbox(b)
     for i in range(1, count + 1):
         points.extend([
-            ('door_{}_axis_1'.format(i), (b['cx'], b['cy'], b['max_z'])),
-            ('door_{}_axis_2'.format(i), (b['cx'], b['cy'], b['min_z'])),
+            ('lid_{}_axis_1'.format(i), p1),
+            ('lid_{}_axis_2'.format(i), p2),
         ])
     _add_memory_verts(mem, points)
+
+
+def _lid_axis_points_from_bbox(b):
+    y = b['min_y']
+    z = b['max_z']
+    return (
+        (b['min_x'], y, z),
+        (b['max_x'], y, z),
+    )
+
+
+def add_memory_door_axis(door_idx=1):
+    b = _bbox_data()
+    if not b:
+        return
+    mem = _get_or_create_memory_object()
+    names = ['lid_{}_axis_1'.format(door_idx), 'lid_{}_axis_2'.format(door_idx)]
+    _remove_memory_groups(mem, names)
+    p1, p2 = _lid_axis_points_from_bbox(b)
+    _add_memory_verts(mem, [
+        ('lid_{}_axis_1'.format(door_idx), p1),
+        ('lid_{}_axis_2'.format(door_idx), p2),
+    ])
+
+
+def remove_memory_door_axis(door_idx=1):
+    ensure_object_mode()
+    names = ['lid_{}_axis_1'.format(door_idx), 'lid_{}_axis_2'.format(door_idx)]
+    mem = get_memory_object()
+    if mem:
+        _remove_memory_groups(mem, names)
+        if len(mem.vertex_groups) == 0:
+            bpy.data.objects.remove(mem, do_unlink=True)
+            _cleanup_empty_collection("Memory")
+
+
+def _building_door_memory_names(door_idx):
+    return [
+        "door{}".format(door_idx),
+        "door{}_action".format(door_idx),
+        "door{}_axis_1".format(door_idx),
+        "door{}_axis_2".format(door_idx),
+    ]
+
+
+def _building_door_points_from_bbox(b, orientation='Y'):
+    z_bottom = b['min_z']
+    z_top = b['max_z']
+    z_mid = b['cz']
+    orientation = str(orientation).upper()
+    if orientation == 'X':
+        on_positive_side = b['cx'] >= b.get('target_cx', b['cx'])
+        x_front = b['cx']
+        x_action_dir = 1.0 if on_positive_side else -1.0
+        y_axis = b['min_y']
+        y_mid = b['cy']
+        width = max(b['max_y'] - b['min_y'], 0.1)
+        depth = max(b['max_x'] - b['min_x'], 0.1)
+        action_x = x_front + depth * 0.05 * x_action_dir
+        action_y = b['max_y'] - width * 0.2
+        return {
+            'selection': (action_x, y_mid, z_mid),
+            'action': (action_x, action_y, z_mid),
+            'axis': [(x_front, y_axis, z_bottom), (x_front, y_axis, z_top)],
+        }
+
+    x_axis = b['min_x']
+    on_positive_side = b['cy'] >= b.get('target_cy', b['cy'])
+    y_front = b['cy']
+    y_action_dir = 1.0 if on_positive_side else -1.0
+    x_mid = b['cx']
+    width = max(b['max_x'] - b['min_x'], 0.1)
+    depth = max(b['max_y'] - b['min_y'], 0.1)
+    action_y = y_front + depth * 0.05 * y_action_dir
+    action_x = b['max_x'] - width * 0.2
+    return {
+        'selection': (x_mid, action_y, z_mid),
+        'action': (action_x, action_y, z_mid),
+        'axis': [(x_axis, y_front, z_bottom), (x_axis, y_front, z_top)],
+    }
+
+
+def add_memory_building_door(door_idx=1, orientation='Y', create_view_geometry=True):
+    b = _building_door_bbox_data(door_idx)
+    if not b:
+        return
+    mem = _get_or_create_memory_object()
+    names = _building_door_memory_names(door_idx)
+    _remove_memory_groups(mem, names)
+    pts = _building_door_points_from_bbox(b, orientation)
+    _add_memory_verts(mem, [
+        ("door{}".format(door_idx), pts['selection']),
+        ("door{}_action".format(door_idx), pts['action']),
+        ("door{}_axis_1".format(door_idx), pts['axis'][0]),
+        ("door{}_axis_2".format(door_idx), pts['axis'][1]),
+    ])
+    if create_view_geometry:
+        create_view_geometry_building_door(door_idx, b)
+
+
+def remove_memory_building_door(door_idx=1):
+    ensure_object_mode()
+    mem = get_memory_object()
+    if mem:
+        _remove_memory_groups(mem, _building_door_memory_names(door_idx))
+        if len(mem.vertex_groups) == 0:
+            bpy.data.objects.remove(mem, do_unlink=True)
+            _cleanup_empty_collection("Memory")
+    remove_view_geometry_building_door(door_idx)
 
 
 # ---------------------------------------------------------------------------

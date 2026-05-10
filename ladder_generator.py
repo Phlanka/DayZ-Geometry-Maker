@@ -18,6 +18,8 @@ import bmesh
 import math
 from mathutils import Vector, Matrix
 
+MAX_SCENE_LADDERS = 5
+
 
 # ---------------------------------------------------------------------------
 #  DayZ standard reference values
@@ -1267,14 +1269,14 @@ class DGM_OT_ladder_type1(bpy.types.Operator):
 
     @classmethod
     def poll(cls, context):
-        return _count_scene_ladders() < 3
+        return _count_scene_ladders() < MAX_SCENE_LADDERS
 
     _created_obj_name: str = ""   # track the object we created so cancel can delete it
 
     def invoke(self, context, event):
         # Always create a brand new ladder object — never reuse existing
-        # Find the lowest unused DZ_Ladder_N name (1, 2, 3)
-        ladder_num = next(n for n in range(1, 4)
+        # Find the lowest unused DZ_Ladder_N name.
+        ladder_num = next(n for n in range(1, MAX_SCENE_LADDERS + 1)
                           if not bpy.data.objects.get('DZ_Ladder_{}'.format(n)))
         obj_name = "DZ_Ladder_{}".format(ladder_num)
         mesh = bpy.data.meshes.new(obj_name)
@@ -2377,11 +2379,11 @@ def draw_ladder_generator_section(layout, context):
     # Add Ladder button + counter
     ladder_count = _count_scene_ladders()
     count_row = box.row(align=True)
-    count_row.label(text="Ladders in scene: {}/3".format(ladder_count),
-                    icon='CHECKMARK' if ladder_count < 3 else 'ERROR')
+    count_row.label(text="Ladders in scene: {}/{}".format(ladder_count, MAX_SCENE_LADDERS),
+                    icon='CHECKMARK' if ladder_count < MAX_SCENE_LADDERS else 'ERROR')
 
     add_row = box.row(align=True)
-    add_row.enabled = ladder_count < 3
+    add_row.enabled = ladder_count < MAX_SCENE_LADDERS
     add_row.scale_y = 1.3
     add_row.operator("dgm.ladder_type1", text="Add Ladder", icon='ADD')
 

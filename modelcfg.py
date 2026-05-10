@@ -30,7 +30,7 @@ def _collect_sections(objects):
     return sorted(sections)
 
 
-def _collect_bones(objects):
+def _collect_bones(objects, door_cfgs=None):
     """
     Return list of (bone_name, parent_name) pairs for vertex groups that have
     a non-empty hidden_selection set. Parent is "" (root) unless the name
@@ -44,6 +44,8 @@ def _collect_bones(objects):
             hs = sm.hidden_selection.strip()
             if hs:
                 bones.setdefault(hs, "")
+    for door_name in (door_cfgs or {}):
+        bones.setdefault(door_name, "")
     return [(name, parent) for name, parent in sorted(bones.items())]
 
 
@@ -76,7 +78,28 @@ def _collect_door_configs(scene):
         closed = -closed
         opened = -opened
         out[vg] = (closed, opened)
+    for di in range(1, 9):
+        vg = getattr(scene, 'dgm_building_door_{}_vgroup'.format(di), "").strip()
+        if not vg:
+            target = getattr(scene, 'dgm_target_object', None)
+            default_vg = "door{}".format(di)
+            if target is not None and getattr(target, "type", "") == 'MESH' and target.vertex_groups.get(default_vg):
+                vg = default_vg
+        if not vg:
+            continue
+        closed = getattr(scene, 'dgm_building_door_{}_closed_angle'.format(di), 0.0)
+        opened = getattr(scene, 'dgm_building_door_{}_open_angle'.format(di), 1.4)
+        # Match the Blender preview direction to DayZ model.cfg evaluation.
+        closed = -closed
+        opened = -opened
+        out[vg] = (closed, opened)
     return out
+
+
+def _anim_class_name(selection):
+    if selection.startswith("door") and selection[4:].isdigit():
+        return "Door{}".format(selection[4:])
+    return "{}_rotate".format(selection)
 
 
 def write_model_cfg(filepath, objects, model_name=None):
@@ -98,7 +121,7 @@ def write_model_cfg(filepath, objects, model_name=None):
     door_cfgs = _collect_door_configs(scene)
 
     sections = _collect_sections(objects)
-    bones = _collect_bones(objects)
+    bones = _collect_bones(objects, door_cfgs)
     skeleton_name = model_name + "_skeleton" if bones else ""
 
     lines = []
@@ -149,30 +172,22 @@ def write_model_cfg(filepath, objects, model_name=None):
     lines.append("\t\tclass Animations")
     lines.append("\t\t{")
 
-    # Emit a template animation entry for each bone so the user can fill it in.
-    # If the bone matches a configured door (dgm_door_N_vgroup == bone name),
-    # emit the single merged axis selection and the recorded open/closed angles.
-    # exporter.py merges door_N_axis_1/2 into <door>_axis for the P3D, so
+    # Emit animations only for configured lid/building door selections.
+    # exporter.py merges axis_1/axis_2 into <door>_axis for the P3D, so
     # model.cfg must reference only that final selection name.
-    for bone, _ in bones:
-        lines.append("\t\t\tclass {}_rotate".format(bone))
+    for bone in sorted(door_cfgs):
+        lines.append("\t\t\tclass {}".format(_anim_class_name(bone)))
         lines.append("\t\t\t{")
-        lines.append("\t\t\t\ttype = rotation;")
-        lines.append("\t\t\t\tsource = {};".format(_quote(bone)))
+        lines.append("\t\t\t\ttype = \"rotation\";")
         lines.append("\t\t\t\tselection = {};".format(_quote(bone)))
-        if bone in door_cfgs:
-            closed, opened = door_cfgs[bone]
-            lines.append("\t\t\t\taxis = {};".format(_quote(bone + "_axis")))
-            lines.append("\t\t\t\tminValue = 0;")
-            lines.append("\t\t\t\tmaxValue = 1;")
-            lines.append("\t\t\t\tangle0 = {:.6f};".format(closed))
-            lines.append("\t\t\t\tangle1 = {:.6f};".format(opened))
-        else:
-            lines.append("\t\t\t\taxis = {};".format(_quote(bone + "_axis")))
-            lines.append("\t\t\t\tminValue = 0;")
-            lines.append("\t\t\t\tmaxValue = 1;")
-            lines.append("\t\t\t\tangle0 = 0;")
-            lines.append("\t\t\t\tangle1 = 3.14159;")
+        lines.append("\t\t\t\tsource = {};".format(_quote(bone)))
+        closed, opened = door_cfgs[bone]
+        lines.append("\t\t\t\taxis = {};".format(_quote(bone + "_axis")))
+        lines.append("\t\t\t\tmemory = 1;")
+        lines.append("\t\t\t\tminValue = 0;")
+        lines.append("\t\t\t\tmaxValue = 1;")
+        lines.append("\t\t\t\tangle0 = {:.6f};".format(closed))
+        lines.append("\t\t\t\tangle1 = {:.6f};".format(opened))
         lines.append("\t\t\t};")
 
     lines.append("\t\t};")
