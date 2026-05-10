@@ -70,6 +70,11 @@ def _collect_door_configs(scene):
             continue
         closed = getattr(scene, 'dgm_door_{}_closed_angle'.format(di), 0.0)
         opened = getattr(scene, 'dgm_door_{}_open_angle'.format(di), -1.5708)
+        # Blender preview and DayZ model.cfg evaluate the same hinge axis in
+        # opposite rotation directions. Keep the UI/preview intuitive and flip
+        # only the exported angles.
+        closed = -closed
+        opened = -opened
         out[vg] = (closed, opened)
     return out
 
@@ -146,7 +151,9 @@ def write_model_cfg(filepath, objects, model_name=None):
 
     # Emit a template animation entry for each bone so the user can fill it in.
     # If the bone matches a configured door (dgm_door_N_vgroup == bone name),
-    # emit the begin/end axis pair and the recorded open/closed angles.
+    # emit the single merged axis selection and the recorded open/closed angles.
+    # exporter.py merges door_N_axis_1/2 into <door>_axis for the P3D, so
+    # model.cfg must reference only that final selection name.
     for bone, _ in bones:
         lines.append("\t\t\tclass {}_rotate".format(bone))
         lines.append("\t\t\t{")
@@ -155,8 +162,7 @@ def write_model_cfg(filepath, objects, model_name=None):
         lines.append("\t\t\t\tselection = {};".format(_quote(bone)))
         if bone in door_cfgs:
             closed, opened = door_cfgs[bone]
-            lines.append("\t\t\t\taxis = {},{};".format(
-                _quote(bone + "_axis_1"), _quote(bone + "_axis_2")))
+            lines.append("\t\t\t\taxis = {};".format(_quote(bone + "_axis")))
             lines.append("\t\t\t\tminValue = 0;")
             lines.append("\t\t\t\tmaxValue = 1;")
             lines.append("\t\t\t\tangle0 = {:.6f};".format(closed))

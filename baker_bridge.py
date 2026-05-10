@@ -364,16 +364,22 @@ def _isolate_selection_as_object(target_obj, sel_name: str):
     return dup
 
 
-def run_baker_and_assign(operator, objects: list, model_name: str, p3d_filepath: str = "") -> bool:
+def run_baker_and_assign(operator, objects: list, model_name: str,
+                         p3d_filepath: str = "", textures_dir: str = "") -> bool:
     """
     Per-selection bake flow:
       For each named selection with a vertex group:
         1. Duplicate the target object, isolate to just that vertex group's verts
         2. Set as active, point baker at data_temp/
         3. Baker runs modally
-        4. On completion: copy/rename files to data/, fix RVMAT paths, delete temp object
+        4. On completion: copy/rename files to <textures_dir>/, fix RVMAT paths, delete temp object
         5. Move to next selection
       After all selections: restore baker output path, assign final paths to selection_mats
+
+    Resolution priority for final texture destination:
+      1. textures_dir (user-set in panel, matches what's written into the P3D)
+      2. <p3d_dir>/data    (legacy default)
+      3. baker_output_path (panel of the baker addon)
     """
     if not baker_licensed():
         operator.report(
@@ -383,18 +389,20 @@ def run_baker_and_assign(operator, objects: list, model_name: str, p3d_filepath:
         )
         return False
 
-    # Resolve the final data/ dir — always prefer the P3D export location so
-    # textures land next to the model. Fall back to the baker panel path only
-    # if no P3D path is known.
-    if p3d_filepath:
+    # Resolve the final destination directory.  IMPORTANT: this MUST match the
+    # path embedded into the P3D by pre_assign_bake_paths(), otherwise the P3D
+    # references textures that don't exist where it expects them.
+    if textures_dir:
+        final_dir = bpy.path.abspath(textures_dir)
+    elif p3d_filepath:
         final_dir = os.path.join(os.path.dirname(bpy.path.abspath(p3d_filepath)), "data")
     else:
         final_dir = baker_output_path()
         if not final_dir:
             operator.report({'ERROR'}, "No bake output path set and no P3D path known.")
             return False
+        final_dir = bpy.path.abspath(final_dir)
 
-    final_dir = bpy.path.abspath(final_dir)
     os.makedirs(final_dir, exist_ok=True)
 
     temp_dir = os.path.join(os.path.dirname(final_dir), "data_temp")

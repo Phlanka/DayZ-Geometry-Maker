@@ -979,7 +979,9 @@ class DGM_OT_export_p3d(bpy.types.Operator):
                 target.select_set(True)
                 context.view_layer.objects.active = target
             baked = baker_bridge.run_baker_and_assign(
-                self, objects, class_name, p3d_filepath=p3d_path
+                self, objects, class_name,
+                p3d_filepath=p3d_path,
+                textures_dir=textures_dir,   # MUST match path stamped into P3D
             )
             if not baked:
                 self.report({'WARNING'}, "Texture bake failed — check DayZ Texture Tools panel")
