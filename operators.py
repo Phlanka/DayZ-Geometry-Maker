@@ -2443,7 +2443,7 @@ def register_scene_props():
         items=[
             ('none',             "None",              "Do not write config files. Only P3D model"),
             ('container_base',   "Container Base",    "Storage container — inherits Container_Base"),
-            ('house_no_destruct',"House (Static Obj)","Static world object — inherits HouseNoDestruct"),
+            ('house_no_destruct',"House (Static Obj)","Static world object for ladders, simple buildings without doors, and similar objects"),
             ('object_with_doors',"Object with doors", "HouseNoDestruct building with DayZ door config"),
         ],
         default='container_base',
